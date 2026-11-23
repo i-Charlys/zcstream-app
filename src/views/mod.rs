@@ -1,21 +1,11 @@
-pub mod bench;
 pub mod network;
-pub mod tests;
 
 use rune::{Color, El, ScrollSpec, TextStyle, col, el, row, spacer, text};
-use rune_kit::{
-    Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Divider, Kit, SegmentedControl,
-};
+use rune_kit::{Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Divider, Kit};
 
-use crate::state::{AppState, Tab, host_platform_badge};
+use crate::state::{AppState, host_platform_badge};
 
 pub fn app_view(s: &AppState, k: &Kit) -> El {
-    let tab_idx = match s.tab {
-        Tab::Benchmarks => 0,
-        Tab::Tests => 1,
-        Tab::Network => 2,
-    };
-
     let header = row()
         .key("header")
         .w_full()
@@ -31,7 +21,7 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
                 .child(
                     el().size(10.0, 10.0)
                         .radius(5.0)
-                        .fill(if s.bench_running || s.net_stats.running {
+                        .fill(if s.net_stats.running {
                             k.c.success.fg
                         } else {
                             k.c.bg_accent
@@ -51,20 +41,6 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
         )
         .child(spacer())
         .child(
-            SegmentedControl::new(&["Pipelines & Latence", "Tests & Validation", "Streaming Réseau"], Some(tab_idx))
-                .fit()
-                .on_pick(|s: &mut AppState, idx, _| {
-                    s.tab = match idx {
-                        0 => Tab::Benchmarks,
-                        1 => Tab::Tests,
-                        _ => Tab::Network,
-                    };
-                })
-                .build(k)
-                .key("main_tabs"),
-        )
-        .child(spacer())
-        .child(
             Button::new(if s.dark { "Clair" } else { "Sombre" })
                 .variant(ButtonVariant::Ghost)
                 .control_size(ControlSize::Regular)
@@ -73,11 +49,7 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
                 .key("theme_toggle"),
         );
 
-    let body = match s.tab {
-        Tab::Benchmarks => bench::view(s, k),
-        Tab::Tests => tests::view(s, k),
-        Tab::Network => network::view(s, k),
-    };
+    let body = network::view(s, k);
 
     col()
         .key("shell")

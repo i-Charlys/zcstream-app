@@ -235,12 +235,15 @@ jobs:
           $PkgName = "${{ steps.meta.outputs.pkg_name }}"
           $Stage = "${{ github.workspace }}\$PkgName"
           Copy-Item -Force "zcstream-app\target\release\zcstream-app.exe" "$Stage\zcstream-app.exe"
+          Copy-Item -Force "zcstream-app\LICENSE" "$Stage\LICENSE"
+          Copy-Item -Force "zcstream-app\THIRD_PARTY_NOTICES.md" "$Stage\THIRD_PARTY_NOTICES.md"
           @(
             "zcstream / RUDP Suite (${{ steps.meta.outputs.tag }} - ${{ matrix.target }})"
             "=================================================================="
             "1. Extract this archive anywhere."
-            "2. Run zcstream-app.exe for the GUI (or run zcrudp_stream.exe / zpsync_peer.exe from CLI)."
-            "All required binaries and HLSL shaders (when applicable) are bundled in this folder."
+            "2. Run zcstream-app.exe for streaming (Direct UDP or ZPSync P2P)."
+            "   CLI binaries (zcrudp_stream.exe, zpsync_peer.exe) and shaders/ are also included."
+            "See LICENSE and THIRD_PARTY_NOTICES.md for license and attribution details."
           ) | Set-Content -Path "$Stage\README-INSTALL.txt" -Encoding UTF8
           Compress-Archive -Path $Stage -DestinationPath "${{ github.workspace }}\${{ steps.meta.outputs.archive }}" -Force
 
@@ -252,12 +255,14 @@ jobs:
           STAGE="${GITHUB_WORKSPACE}/${PKG_NAME}"
           cp zcstream-app/target/release/zcstream-app "${STAGE}/zcstream-app"
           chmod +x "${STAGE}/zcstream-app"
+          cp zcstream-app/LICENSE "${STAGE}/LICENSE"
+          cp zcstream-app/THIRD_PARTY_NOTICES.md "${STAGE}/THIRD_PARTY_NOTICES.md"
           printf '%s\n' \
             "zcstream / RUDP Suite (${{ steps.meta.outputs.tag }} - ${{ matrix.target }})" \
             "==================================================================" \
             "1. Extract this archive anywhere: tar -xzf <archive>.tar.gz" \
             "2. cd <folder> && ./zcstream-app" \
-            "All required binaries are bundled in this folder." \
+            "See LICENSE and THIRD_PARTY_NOTICES.md for license and attribution details." \
             > "${STAGE}/README-INSTALL.txt"
           tar -czf "${{ github.workspace }}/${{ steps.meta.outputs.archive }}" -C "${GITHUB_WORKSPACE}" "${PKG_NAME}"
 

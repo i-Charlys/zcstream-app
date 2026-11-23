@@ -1,10 +1,14 @@
-# zcstream-app — RUDP Control Center
+# zcstream-app — Streaming Vidéo RUDP
 
-Native GPU-accelerated desktop GUI (`rune` + `wgpu`) for benchmarking, testing, and live P2P streaming across the RUDP video stack (`zcstream`, `zcvid`, `zcrudp`, `zpsync`).
+Interface graphique native accélérée GPU (`Rune` + `wgpu`) dédiée au **streaming vidéo ultra-basse latence** en UDP direct ou en pair-à-pair via ZPSync NAT Traversal (`zcstream`, `zcvid`, `zcrudp`, `zpsync`).
 
-## One-Command Installation (Windows, Linux, macOS)
+## Téléchargement direct (Releases GitHub)
 
-You do **not** need to manually clone the 5 repositories or edit any file paths. Clone `zcstream-app` and run the included installer script:
+Téléchargez l'archive précompilée pour votre plateforme depuis **[GitHub Releases](https://github.com/i-Charlys/zcstream-app/releases)** (`windows-x64`, `windows-arm64`, `linux-x64`, `linux-arm64`), décompressez-la et lancez directement `zcstream-app`. Aucune compilation ni configuration manuelle requise.
+
+## Compilation depuis les sources (1 commande)
+
+Vous n'avez **pas** besoin de cloner les 5 dépôts manuellement ni de modifier des chemins d'accès :
 
 ### Windows (PowerShell)
 ```powershell
@@ -21,20 +25,16 @@ chmod +x ./install.sh
 ./install.sh
 ```
 
-### What the installer does automatically
-1. Clones (or updates) sibling repositories `zcrudp`, `zcvid`, `zpsync`, `zcstream`, and `zcstream-app` in the parent workspace folder.
-2. Auto-detects your C/C++ compiler (`clang`, `gcc`, or MSVC) and CMake generator.
-3. Builds and tests `zcrudp`, `zcvid`, `zpsync`, and `zcstream` (auto-fetching `nvEncodeAPI.h` on Windows).
-4. Builds `zcstream-app` with Cargo and stages a self-contained portable bundle (`zcstream-app`, `zcrudp_stream`, `zcrudp_zcvid_bench`, `zcrudp_stream_bench`, `zpsync_peer`, and `shaders/`) into `../dist/`.
+L'installeur récupère automatiquement les dépôts compagnons (`zcrudp`, `zcvid`, `zpsync`, `zcstream`), compile les binaires en `Release` et assemble un bundle autonome dans `../dist/`.
 
-## Environment Overrides (Optional)
+## Surcharges d'environnement (optionnelles)
 
-`zcstream-app` automatically discovers binaries and repositories in:
-1. Next to the `zcstream-app` executable (portable `dist/` bundle)
-2. `../dist/` and `../zcstream/build/{,Release,Debug}` (workspace layout)
-3. CMake `_deps/` directories (`../zcstream/build/_deps/<repo>-src`)
-4. System `PATH`
+`zcstream-app` découvre automatiquement les exécutables (`zcrudp_stream`, `zpsync_peer`) à côté de l'exécutable, dans `../dist/`, dans `../zcstream/build/{,Release,Debug}`, ou via le `PATH` :
+- `ZCSTREAM_BIN_DIR` : dossier contenant les binaires `zcstream`.
+- `ZCSTREAM_ROOT` : dossier racine contenant les dépôts compagnons.
 
-You can also override paths via environment variables if desired:
-- `ZCSTREAM_BIN_DIR`: directory containing `zcrudp_stream`, `zcrudp_zcvid_bench`, `zpsync_peer`, etc.
-- `ZCSTREAM_ROOT`: root directory containing the sibling repositories.
+## Licence & Citations
+
+Ce projet et l'ensemble des dépôts de la suite (`zcstream-app`, `zcstream`, `zcvid`, `zcrudp`, `zpsync`) sont distribués sous licence **MIT** — voir [LICENSE](LICENSE).
+
+Les attributions aux bibliothèques tierces (`Rune`, `wgpu`, `winit`, FFmpeg `nv-codec-headers`, `Pyrowave`) ainsi que les références scientifiques et standards (RFC 8439, RFC 7748, RFC 8298, Cauchy FEC, H.264/HEVC, Jayant ADM, STUN/DHT) sont détaillées dans [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

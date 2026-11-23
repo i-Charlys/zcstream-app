@@ -104,18 +104,6 @@ pub fn zcstream_dir() -> PathBuf {
     find_repo_dir("zcstream")
 }
 
-pub fn zcvid_dir() -> PathBuf {
-    find_repo_dir("zcvid")
-}
-
-pub fn zcrudp_dir() -> PathBuf {
-    find_repo_dir("zcrudp")
-}
-
-pub fn zpsync_dir() -> PathBuf {
-    find_repo_dir("zpsync")
-}
-
 pub fn bin_name(base: &str) -> String {
     format!("{base}{}", std::env::consts::EXE_SUFFIX)
 }
@@ -218,85 +206,6 @@ pub fn host_supports_rio() -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tab {
-    Benchmarks,
-    Tests,
-    Network,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PipelineKind {
-    Nvenc,
-    Pyrowave,
-    Zcvid,
-}
-
-impl PipelineKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            PipelineKind::Nvenc => "NVENC Direct (H.264)",
-            PipelineKind::Pyrowave => "Pyrowave (Wavelets)",
-            PipelineKind::Zcvid => {
-                if cfg!(target_os = "windows") {
-                    "Zcvid Unified (GPU)"
-                } else {
-                    "Zcvid Unified (Portable)"
-                }
-            }
-        }
-    }
-
-    pub fn base_exe_name(self) -> &'static str {
-        match self {
-            PipelineKind::Nvenc => "zcrudp_stream_bench",
-            PipelineKind::Pyrowave => "zcrudp_pyrowave_bench",
-            PipelineKind::Zcvid => "zcrudp_zcvid_bench",
-        }
-    }
-
-    pub fn exe_name(self) -> String {
-        bin_name(self.base_exe_name())
-    }
-
-    pub fn is_supported_on_platform(self) -> bool {
-        match self {
-            PipelineKind::Nvenc => host_supports_nvenc(),
-            PipelineKind::Pyrowave | PipelineKind::Zcvid => true,
-        }
-    }
-
-    pub fn is_binary_present(self) -> bool {
-        find_binary(self.base_exe_name()).is_some()
-    }
-
-    pub fn summary(self) -> &'static str {
-        match self {
-            PipelineKind::Nvenc => {
-                if host_supports_nvenc() {
-                    "nvEncodeAPI64 + D3D11/DXGI Zero-Copy (~3.3 ms p50)"
-                } else {
-                    "Indisponible hors Windows x64 (utilisez Zcvid Unified ou Pyrowave)"
-                }
-            }
-            PipelineKind::Pyrowave => {
-                if host_supports_rio() {
-                    "Vulkan Compute Wavelets + Winsock RIO (~1.3 ms p50)"
-                } else {
-                    "Vulkan Compute Wavelets + UDP POSIX"
-                }
-            }
-            PipelineKind::Zcvid => {
-                if host_supports_rio() {
-                    "Codec unique HLSL 4x4/8x8 Transform RDO + QPel MV + CABAC + Winsock RIO"
-                } else {
-                    "Codec unique portable C11 4x4/8x8 Transform RDO + QPel MV + CABAC + UDP POSIX"
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolutionPreset {
     pub label: &'static str,
     pub width: u32,
@@ -309,119 +218,6 @@ pub const RESOLUTIONS: &[ResolutionPreset] = &[
     ResolutionPreset { label: "2560×1440", width: 2560, height: 1440 },
     ResolutionPreset { label: "3840×2160", width: 3840, height: 2160 },
 ];
-
-#[derive(Clone, Debug)]
-pub struct NetImpair {
-    pub nasty_preset: bool,
-    pub loss_pct: i32,
-    pub burst_prob_pct: i32,
-    pub burst_len: i32,
-    pub reorder_pct: i32,
-    pub dup_pct: i32,
-    pub base_owd_us: u32,
-    pub jitter_us: u32,
-}
-
-impl Default for NetImpair {
-    fn default() -> Self {
-        Self {
-            nasty_preset: false,
-            loss_pct: 0,
-            burst_prob_pct: 0,
-            burst_len: 3,
-            reorder_pct: 0,
-            dup_pct: 0,
-            base_owd_us: 0,
-            jitter_us: 0,
-        }
-    }
-}
-
-impl NetImpair {
-    pub fn apply_nasty(&mut self) {
-        self.nasty_preset = true;
-        self.loss_pct = 5;
-        self.burst_prob_pct = 8;
-        self.burst_len = 3;
-        self.reorder_pct = 15;
-        self.dup_pct = 5;
-        self.base_owd_us = 2000;
-        self.jitter_us = 3000;
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct StatRow {
-    pub label: String,
-    pub min_us: f64,
-    pub p50_us: f64,
-    pub p95_us: f64,
-    pub p99_us: f64,
-    pub avg_us: f64,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct BenchResults {
-    pub adapter: String,
-    pub encoder: String,
-    pub frames_sent: Option<u64>,
-    pub frames_delivered: Option<u64>,
-    pub delivered_pct: Option<f64>,
-    pub fec_recovered: Option<u64>,
-    pub frames_dropped: Option<u64>,
-    pub pkts_sent: Option<u64>,
-    pub pkts_dropped_sim: Option<u64>,
-    pub pkts_reordered: Option<u64>,
-    pub pkts_dup: Option<u64>,
-    pub pkts_fec: Option<u64>,
-    pub send_errors: Option<u64>,
-    pub avg_mbps: Option<f64>,
-    pub kb_per_frame: Option<f64>,
-    pub y_psnr_db: Option<f64>,
-    pub ref_mismatch_px: Option<u64>,
-    pub rows: Vec<StatRow>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TestStatus {
-    Idle,
-    Running,
-    Passed,
-    Failed,
-}
-
-impl TestStatus {
-    pub fn label(self) -> &'static str {
-        match self {
-            TestStatus::Idle => "Prêt",
-            TestStatus::Running => "En cours...",
-            TestStatus::Passed => "OK",
-            TestStatus::Failed => "Échec",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TestTargetId {
-    StreamingBridge,
-    ZcvidCodec,
-    ZcrudpCore,
-    Zpsync,
-}
-
-#[derive(Clone, Debug)]
-pub struct TestEntry {
-    pub id: TestTargetId,
-    pub name: &'static str,
-    pub subtitle: &'static str,
-    pub status: TestStatus,
-    pub duration_ms: Option<u64>,
-    pub logs: Vec<String>,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetRole {
@@ -476,10 +272,6 @@ pub struct NetSessionStats {
 }
 
 pub enum AppEvent {
-    BenchLog(String),
-    BenchDone { exit_code: i32 },
-    TestLog { id: TestTargetId, line: String },
-    TestDone { id: TestTargetId, passed: bool, duration_ms: u64 },
     NetStats(NetSessionStats),
     NetLog(String),
     NetStopped(String),
@@ -488,36 +280,11 @@ pub enum AppEvent {
 
 pub struct AppState {
     pub dark: bool,
-    pub tab: Tab,
     pub waker: Option<Waker>,
     pub tx: Sender<AppEvent>,
     pub rx: Receiver<AppEvent>,
 
-    // Benchmarks tab
-    pub pipeline: PipelineKind,
-    pub res_idx: usize,
-    pub bench_fps: u32,
-    pub bench_fps_edit: TextEdit,
-    pub frames: usize,
-    pub bitrate_mbps: u32,
-    pub bench_bitrate_edit: TextEdit,
-    pub fec_shards: u8,
-    pub use_rio: bool,
-    pub live_window: bool,
-    pub measure_psnr: bool,
-    pub impair: NetImpair,
-    pub bench_running: bool,
-    pub bench_exit_code: Option<i32>,
-    pub bench_stop: Option<Arc<AtomicBool>>,
-    pub bench_results: BenchResults,
-    pub bench_logs: Vec<String>,
-    pub show_raw_logs: bool,
-
-    // Tests tab
-    pub tests: Vec<TestEntry>,
-    pub selected_test: usize,
-
-    // Network streaming tab
+    // Network streaming state
     pub net_role: NetRole,
     pub net_connect_mode: NetConnectMode,
     pub net_codec: StreamCodec,
@@ -552,8 +319,6 @@ impl Default for AppState {
         let net_port_edit = TextEdit::new("9900");
         let net_width_edit = TextEdit::new("1920");
         let net_height_edit = TextEdit::new("1080");
-        let bench_fps_edit = TextEdit::new("120");
-        let bench_bitrate_edit = TextEdit::new("");
         let net_fps_edit = TextEdit::new("120");
         let net_bitrate_edit = TextEdit::new("");
         let zp_secret_edit = TextEdit::new("zcstream-p2p");
@@ -563,63 +328,9 @@ impl Default for AppState {
 
         Self {
             dark: true,
-            tab: Tab::Benchmarks,
             waker: None,
             tx,
             rx,
-            pipeline: PipelineKind::Zcvid,
-            res_idx: 1, // 1920x1080
-            bench_fps: 120,
-            bench_fps_edit,
-            frames: 240,
-            bitrate_mbps: 50,
-            bench_bitrate_edit,
-            fec_shards: 1,
-            use_rio: host_supports_rio(),
-            live_window: false,
-            measure_psnr: true,
-            impair: NetImpair::default(),
-            bench_running: false,
-            bench_exit_code: None,
-            bench_stop: None,
-            bench_results: BenchResults::default(),
-            bench_logs: Vec::new(),
-            show_raw_logs: false,
-            tests: vec![
-                TestEntry {
-                    id: TestTargetId::StreamingBridge,
-                    name: "zcstream / portable + bridge",
-                    subtitle: "ctest --test-dir zcstream/build (fragmentation FEC + codec portable C11)",
-                    status: TestStatus::Idle,
-                    duration_ms: None,
-                    logs: Vec::new(),
-                },
-                TestEntry {
-                    id: TestTargetId::ZcvidCodec,
-                    name: "zcvid / zcvid_codec",
-                    subtitle: "make test (trit packing + codec SIMD/scalar + CPU GPU-dec + 18 preuves)",
-                    status: TestStatus::Idle,
-                    duration_ms: None,
-                    logs: Vec::new(),
-                },
-                TestEntry {
-                    id: TestTargetId::ZcrudpCore,
-                    name: "zcrudp / core",
-                    subtitle: "ctest --test-dir zcrudp/build (session, reliability, crypto, nextgen)",
-                    status: TestStatus::Idle,
-                    duration_ms: None,
-                    logs: Vec::new(),
-                },
-                TestEntry {
-                    id: TestTargetId::Zpsync,
-                    name: "zpsync / nat_traversal",
-                    subtitle: "ctest --test-dir zpsync/build (crypto, DHT, STUN, ICMP sentinel, punch)",
-                    status: TestStatus::Idle,
-                    duration_ms: None,
-                    logs: Vec::new(),
-                },
-            ],
-            selected_test: 0,
             net_role: NetRole::Sender,
             net_connect_mode: NetConnectMode::DirectUdp,
             net_codec: StreamCodec::Zcvid,
@@ -671,38 +382,6 @@ impl AppState {
         (mbps as u32).max(4)
     }
 
-    pub fn effective_bench_fps(&self) -> u32 {
-        self.bench_fps_edit
-            .text
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .filter(|&v| v > 0)
-            .unwrap_or(self.bench_fps)
-            .clamp(1, 1000)
-    }
-
-    pub fn is_bench_bitrate_auto(&self) -> bool {
-        let raw = self.bench_bitrate_edit.text.trim();
-        raw.is_empty() || raw == "0"
-    }
-
-    pub fn effective_bench_bitrate_mbps(&self) -> u32 {
-        let res = RESOLUTIONS[self.res_idx];
-        let fps = self.effective_bench_fps();
-        if self.is_bench_bitrate_auto() {
-            return Self::auto_bitrate_mbps(res.width, res.height, fps);
-        }
-        self.bench_bitrate_edit
-            .text
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .filter(|&v| v > 0)
-            .unwrap_or(self.bitrate_mbps)
-            .clamp(1, 1000)
-    }
-
     pub fn effective_net_dims(&self) -> (u32, u32) {
         let w = self.net_width_edit.text.trim().parse::<u32>().unwrap_or(1920).max(64);
         let h = self.net_height_edit.text.trim().parse::<u32>().unwrap_or(1080).max(64);
@@ -735,102 +414,5 @@ impl AppState {
             .parse::<u32>()
             .unwrap_or(self.net_bitrate_mbps)
             .min(1000)
-    }
-
-    pub fn build_bench_args(&self) -> Vec<String> {
-        let res = RESOLUTIONS[self.res_idx];
-        let fps = self.effective_bench_fps();
-        let bitrate_mbps = self.effective_bench_bitrate_mbps();
-        let mut args = vec![
-            "--width".into(),
-            res.width.to_string(),
-            "--height".into(),
-            res.height.to_string(),
-            "--frames".into(),
-            self.frames.to_string(),
-        ];
-
-        match self.pipeline {
-            PipelineKind::Nvenc => {
-                args.push("--fps".into());
-                args.push(fps.to_string());
-                args.push("--bitrate".into());
-                args.push((bitrate_mbps as u64 * 1_000_000).to_string());
-                if self.live_window {
-                    args.push("--live".into());
-                }
-            }
-            PipelineKind::Pyrowave => {
-                // target-bytes per frame: bitrate_bps / (8 * fps)
-                let target_bytes = (bitrate_mbps as u64 * 1_000_000) / (8 * fps.max(1) as u64);
-                args.push("--fps".into());
-                args.push(fps.to_string());
-                args.push("--target-bytes".into());
-                args.push(target_bytes.max(1000).to_string());
-                if host_supports_rio() && !self.use_rio {
-                    args.push("--no-rio".into());
-                }
-            }
-            PipelineKind::Zcvid => {
-                args.push("--fps".into());
-                args.push(fps.to_string());
-                args.push("--bitrate".into());
-                args.push((bitrate_mbps as u64 * 1_000_000).to_string());
-                if host_supports_rio() && !self.use_rio {
-                    args.push("--no-rio".into());
-                }
-                if self.measure_psnr {
-                    args.push("--psnr".into());
-                }
-                if self.live_window {
-                    args.push("--live".into());
-                }
-            }
-        }
-
-        if self.fec_shards == 0 {
-            args.push("--no-fec".into());
-        } else {
-            args.push("--fec".into());
-            args.push(self.fec_shards.to_string());
-        }
-
-        if self.impair.nasty_preset {
-            args.push("--nasty".into());
-        } else {
-            if self.impair.loss_pct > 0 {
-                args.push("--loss".into());
-                args.push(self.impair.loss_pct.to_string());
-            }
-            if self.impair.burst_prob_pct > 0 {
-                args.push("--burst".into());
-                args.push(self.impair.burst_prob_pct.to_string());
-                args.push(self.impair.burst_len.to_string());
-            }
-            if self.impair.reorder_pct > 0 {
-                args.push("--reorder".into());
-                args.push(self.impair.reorder_pct.to_string());
-            }
-            if self.impair.dup_pct > 0 {
-                args.push("--dup".into());
-                args.push(self.impair.dup_pct.to_string());
-            }
-            if self.impair.base_owd_us > 0 {
-                args.push("--owd".into());
-                args.push(self.impair.base_owd_us.to_string());
-            }
-            if self.impair.jitter_us > 0 {
-                args.push("--jitter".into());
-                args.push(self.impair.jitter_us.to_string());
-            }
-        }
-
-        args
-    }
-
-    pub fn cli_preview(&self) -> String {
-        let exe = self.pipeline.exe_name();
-        let args = self.build_bench_args().join(" ");
-        format!("{exe} {args}")
     }
 }

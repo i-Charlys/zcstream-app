@@ -5,8 +5,7 @@ mod views;
 
 use rune::{AppSpec, Cx, El, Tx, Waker};
 
-use crate::runner::parse_bench_line;
-use crate::state::{AppEvent, AppState, TestStatus};
+use crate::state::{AppEvent, AppState};
 
 fn setup(s: &mut AppState, waker: Waker) {
     s.waker = Some(waker);
@@ -17,36 +16,6 @@ fn poll(s: &mut AppState, _t: f64, _tx: &mut Tx) -> bool {
     while let Ok(ev) = s.rx.try_recv() {
         changed = true;
         match ev {
-            AppEvent::BenchLog(line) => {
-                parse_bench_line(&mut s.bench_results, &line);
-                if s.bench_logs.len() >= 500 {
-                    s.bench_logs.remove(0);
-                }
-                s.bench_logs.push(line);
-            }
-            AppEvent::BenchDone { exit_code } => {
-                s.bench_running = false;
-                s.bench_exit_code = Some(exit_code);
-                s.bench_stop = None;
-            }
-            AppEvent::TestLog { id, line } => {
-                if let Some(entry) = s.tests.iter_mut().find(|t| t.id == id) {
-                    if entry.logs.len() >= 500 {
-                        entry.logs.remove(0);
-                    }
-                    entry.logs.push(line);
-                }
-            }
-            AppEvent::TestDone { id, passed, duration_ms } => {
-                if let Some(entry) = s.tests.iter_mut().find(|t| t.id == id) {
-                    entry.status = if passed {
-                        TestStatus::Passed
-                    } else {
-                        TestStatus::Failed
-                    };
-                    entry.duration_ms = Some(duration_ms);
-                }
-            }
             AppEvent::NetStats(stats) => {
                 s.net_stats = stats;
             }
@@ -85,11 +54,8 @@ fn main() {
     rune::run(AppSpec::<AppState> {
         setup: Some(setup),
         poll: Some(poll),
-        scenes: &[
-            ("tests", |s| s.tab = crate::state::Tab::Tests),
-            ("network", |s| s.tab = crate::state::Tab::Network),
-        ],
-        ..AppSpec::new("zcstream — RUDP Control Center", (1200.0, 820.0), AppState::default, view)
+        scenes: &[("receiver", |s| s.net_role = crate::state::NetRole::Receiver)],
+        ..AppSpec::new("zcstream — Streaming Vidéo RUDP", (1200.0, 820.0), AppState::default, view)
     });
 }
 
@@ -99,17 +65,18 @@ mod tests {
     use rune::{Env, Runtime};
 
     #[test]
-    fn tabs_switch_and_render_cleanly() {
+    fn streaming_view_renders_cleanly() {
         let env = Env { system_dark: true, scale: 1.0 };
-        let mut rt = Runtime::new(AppState::default(), view, (1200.0, 820.0), env);
+        let net_zcvid = AppState::default();
+        let mut rt = Runtime::new(net_zcvid, view, (1200.0, 820.0), env);
         rt.frame(0.0);
-        assert_eq!(rt.state.tab, crate::state::Tab::Benchmarks);
-        assert!(rt.find("btn_run_bench").is_some());
-        assert!(rt.find("bench_hz_480").is_some());
-        assert!(rt.find("bench_fps_input").is_some());
-        assert!(rt.find("bench_bitrate_auto").is_some());
-        assert!(rt.find("bench_bitrate_seg").is_some());
-        assert!(rt.find("bench_bitrate_input").is_some());
+        assert_eq!(rt.state.net_codec, crate::state::StreamCodec::Zcvid);
+        assert!(rt.find("net_codec_seg").is_some());
+        assert!(rt.find("net_hz_480").is_some());
+        assert!(rt.find("net_fps_input").is_some());
+        assert!(rt.find("net_bitrate_auto").is_some());
+        assert!(rt.find("net_bitrate_seg").is_some());
+        assert!(rt.find("net_bitrate_input").is_some());
 
         // Auto bandwidth scales with resolution & fps; min_mbps gates high Hz when Mbps is low.
         assert!(AppState::min_mbps_for_mode(1920, 1080, 480) > 25);
@@ -118,47 +85,7 @@ mod tests {
         assert!(AppState::auto_bitrate_mbps(1920, 1080, 480) >= 65);
         assert!(AppState::auto_bitrate_mbps(3840, 2160, 60) >= 40);
 
-        let custom = AppState {
-            bench_fps_edit: rune::TextEdit::new("360"),
-            bench_bitrate_edit: rune::TextEdit::new("145"),
-            ..AppState::default()
-        };
-        let args = custom.build_bench_args();
-        assert!(args.windows(2).any(|w| w == ["--fps", "360"]));
-        assert!(args.windows(2).any(|w| w == ["--bitrate", "145000000"]));
-
-        let pyro_bench = AppState {
-            pipeline: crate::state::PipelineKind::Pyrowave,
-            bench_fps_edit: rune::TextEdit::new("240"),
-            bench_bitrate_edit: rune::TextEdit::new("60"),
-            use_rio: false,
-            ..AppState::default()
-        };
-        assert_eq!(
-            crate::state::PipelineKind::Pyrowave.exe_name(),
-            crate::state::bin_name("zcrudp_pyrowave_bench")
-        );
-        let pyro_args = pyro_bench.build_bench_args();
-        assert!(pyro_args.windows(2).any(|w| w == ["--fps", "240"]));
-        assert!(pyro_args.windows(2).any(|w| w == ["--target-bytes", "31250"]));
-        assert_eq!(
-            pyro_args.iter().any(|a| a == "--no-rio"),
-            crate::state::host_supports_rio()
-        );
-        let mut rt_pyro_bench = Runtime::new(pyro_bench, view, (1200.0, 820.0), env);
-        rt_pyro_bench.frame(0.0);
-        assert!(rt_pyro_bench.find("btn_run_bench").is_some());
-
-        let tests_state = AppState {
-            tab: crate::state::Tab::Tests,
-            ..AppState::default()
-        };
-        let mut rt_tests = Runtime::new(tests_state, view, (1200.0, 820.0), env);
-        rt_tests.frame(0.0);
-        assert!(rt_tests.find("btn_run_test_3").is_some());
-
         let net_state = AppState {
-            tab: crate::state::Tab::Network,
             net_connect_mode: crate::state::NetConnectMode::ZpSync,
             net_role: crate::state::NetRole::Receiver,
             net_codec: crate::state::StreamCodec::Pyrowave,
@@ -174,32 +101,27 @@ mod tests {
         assert!(rt_net.find("net_fps_input").is_some());
 
         let net_sender = AppState {
-            tab: crate::state::Tab::Network,
             net_role: crate::state::NetRole::Sender,
-            net_codec: crate::state::StreamCodec::Pyrowave,
+            net_codec: crate::state::StreamCodec::Nvenc,
             net_bitrate_edit: rune::TextEdit::new("15"),
             ..AppState::default()
         };
+        assert_eq!(
+            net_sender.net_codec.is_supported_on_platform(),
+            crate::state::host_supports_nvenc()
+        );
         let mut rt_sender = Runtime::new(net_sender, view, (1200.0, 820.0), env);
         rt_sender.frame(0.0);
-        assert!(rt_sender.find("net_codec_seg").is_some());
-        assert!(rt_sender.find("net_hz_480").is_some());
-        assert!(rt_sender.find("net_fps_input").is_some());
         assert!(rt_sender.find("net_bitrate_auto").is_some());
-        assert!(rt_sender.find("net_bitrate_seg").is_some());
         assert!(rt_sender.find("net_bitrate_input").is_some());
 
         // Platform agnosticism checks (OS/arch detection + universal Zcvid defaults)
         assert!(!crate::state::host_platform_badge().is_empty());
-        assert!(crate::state::PipelineKind::Zcvid.is_supported_on_platform());
         assert!(crate::state::StreamCodec::Zcvid.is_supported_on_platform());
+        assert!(crate::state::StreamCodec::Pyrowave.is_supported_on_platform());
         assert_eq!(
             crate::state::bin_name("zcrudp_stream"),
             format!("zcrudp_stream{}", std::env::consts::EXE_SUFFIX)
-        );
-        assert_eq!(
-            AppState::default().pipeline,
-            crate::state::PipelineKind::Zcvid
         );
     }
 

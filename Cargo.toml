@@ -2,6 +2,10 @@
 name = "zcstream-app"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["CAILLON Charles"]
+description = "Low-latency RUDP + Zcvid cross-platform video streaming application"
+repository = "https://github.com/i-Charlys/zcstream-app"
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "958743308f36fdf1c568c513badc96ddb0c7f040" }
