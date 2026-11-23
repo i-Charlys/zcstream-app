@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use rune::Waker;
 
+use crate::runner::ensure_binary_available;
 use crate::state::{
-    AppEvent, NetConnectMode, NetRole, NetSessionStats, StreamCodec, bin_name, find_binary,
+    AppEvent, NetConnectMode, NetRole, NetSessionStats, StreamCodec, bin_name,
 };
 
 #[derive(Clone, Debug)]
@@ -32,12 +33,16 @@ fn wake(waker: &Option<Waker>) {
 pub fn probe_zpsync_network(local_port: u16, tx: Sender<AppEvent>, waker: Option<Waker>) {
     thread::spawn(move || {
         let peer_bin = bin_name("zpsync_peer");
-        let Some(exe_path) = find_binary("zpsync_peer") else {
+        let mut logs = Vec::new();
+        let Some(exe_path) = ensure_binary_available("zpsync_peer", |line| {
+            logs.push(line);
+        }) else {
+            logs.push(format!(
+                "Erreur: `{peer_bin}` introuvable. Lancez ./install.ps1 ou ./install.sh (ou définissez ZCSTREAM_BIN_DIR)."
+            ));
             let _ = tx.send(AppEvent::ZpProbeDone {
                 summary: format!("{peer_bin} introuvable"),
-                logs: vec![format!(
-                    "Erreur: `{peer_bin}` introuvable. Lancez ./install.ps1 ou ./install.sh (ou définissez ZCSTREAM_BIN_DIR)."
-                )],
+                logs,
             });
             wake(&waker);
             return;
@@ -53,7 +58,7 @@ pub fn probe_zpsync_network(local_port: u16, tx: Sender<AppEvent>, waker: Option
             args.push(local_port.to_string());
         }
 
-        let mut logs = vec![format!("$ {} {}", exe_path.display(), args.join(" "))];
+        logs.push(format!("$ {} {}", exe_path.display(), args.join(" ")));
         match Command::new(&exe_path)
             .args(&args)
             .current_dir(&work_dir)
@@ -124,7 +129,12 @@ pub fn start_network_session(
     stop: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        let Some(exe_path) = find_binary("zcrudp_stream") else {
+        let tx_log = tx.clone();
+        let waker_log = waker.clone();
+        let Some(exe_path) = ensure_binary_available("zcrudp_stream", move |line| {
+            let _ = tx_log.send(AppEvent::NetLog(line));
+            wake(&waker_log);
+        }) else {
             let _ = tx.send(AppEvent::NetStopped(format!(
                 "Exécutable `{}` introuvable. Lancez ./install.ps1 ou ./install.sh (ou définissez ZCSTREAM_BIN_DIR).",
                 bin_name("zcrudp_stream")

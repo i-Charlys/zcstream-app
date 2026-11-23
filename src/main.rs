@@ -256,7 +256,15 @@ mod tests {
             deps_zcvid
         );
 
-        // 6. Sibling repo in workspace root takes priority over _deps
+        // 6. GitHub ZIP download (<repo>-main) takes priority over _deps
+        let zip_zcvid = root.join("zcvid-main");
+        std::fs::create_dir_all(&zip_zcvid).unwrap();
+        assert_eq!(
+            crate::state::find_repo_dir_in("zcvid", &root, Some(&exe_dir)),
+            zip_zcvid
+        );
+
+        // 7. Direct sibling repo in workspace root takes priority over <repo>-main and _deps
         let sibling_zcvid = root.join("zcvid");
         std::fs::create_dir_all(&sibling_zcvid).unwrap();
         assert_eq!(

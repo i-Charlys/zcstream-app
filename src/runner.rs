@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,8 @@ use crate::state::{
     AppEvent, BenchResults, PipelineKind, StatRow, TestTargetId, find_binary, zcrudp_dir,
     zcstream_dir, zcvid_dir, zpsync_dir,
 };
+
+static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 
 fn wake(waker: &Option<Waker>) {
     if let Some(w) = waker {
@@ -28,9 +30,14 @@ pub fn spawn_benchmark(
     stop: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        let Some(exe_path) = find_binary(pipeline.base_exe_name()) else {
+        let tx_log = tx.clone();
+        let waker_log = waker.clone();
+        let Some(exe_path) = ensure_binary_available(pipeline.base_exe_name(), move |line| {
+            let _ = tx_log.send(AppEvent::BenchLog(line));
+            wake(&waker_log);
+        }) else {
             let _ = tx.send(AppEvent::BenchLog(format!(
-                "Erreur: exécutable `{}` introuvable. Lancez ./install.ps1 (Windows) ou ./install.sh (Linux/macOS), ou définissez ZCSTREAM_BIN_DIR.",
+                "Erreur: exécutable `{}` introuvable et la compilation CMake a échoué. Lancez ./install.ps1 (Windows) ou ./install.sh (Linux/macOS), ou définissez ZCSTREAM_BIN_DIR.",
                 pipeline.exe_name()
             )));
             wake(&waker);
@@ -238,53 +245,80 @@ fn tool_in_path(name: &str) -> bool {
         .is_ok()
 }
 
-fn ensure_cmake_built(
-    id: TestTargetId,
-    dir: &Path,
-    label: &str,
-    tx: &Sender<AppEvent>,
-    waker: &Option<Waker>,
-) {
-    let build_dir = dir.join("build");
-    if build_dir.join("CTestTestfile.cmake").is_file() {
+fn ensure_repo_present(repo_name: &str, dir: &Path, log: &mut dyn FnMut(String)) {
+    if dir.is_dir() {
         return;
     }
-    let _ = tx.send(AppEvent::TestLog {
-        id,
-        line: format!("Info: {label} n'existe pas encore. Configuration CMake..."),
-    });
-    wake(waker);
-    let mut cfg_cmd = Command::new("cmake");
-    if cfg!(windows) {
-        if tool_in_path("clang") && tool_in_path("mingw32-make") {
-            cfg_cmd.args([
-                "-S", ".", "-B", "build", "-G", "MinGW Makefiles",
-                "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
-            ]);
-        } else if tool_in_path("gcc") && tool_in_path("mingw32-make") {
-            cfg_cmd.args([
-                "-S", ".", "-B", "build", "-G", "MinGW Makefiles",
-                "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
-            ]);
+    let url = format!("https://github.com/i-Charlys/{repo_name}.git");
+    log(format!("Info: dépôt `{repo_name}` absent localement. Clonage de {url}..."));
+    if let Some(parent) = dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if tool_in_path("git") {
+        let status = Command::new("git")
+            .args(["clone", "--depth", "1", &url])
+            .arg(dir)
+            .output();
+        match status {
+            Ok(out) if out.status.success() => {
+                log(format!("Info: `{repo_name}` cloné dans {}", dir.display()));
+            }
+            Ok(out) => {
+                log(String::from_utf8_lossy(&out.stderr).trim().to_string());
+            }
+            Err(e) => {
+                log(format!("Erreur git clone `{repo_name}`: {e}"));
+            }
+        }
+    }
+}
+
+fn run_cmake_configure_and_build(dir: &Path, label: &str, log: &mut dyn FnMut(String)) {
+    let build_dir = dir.join("build");
+    if !build_dir.join("CMakeCache.txt").is_file() {
+        log(format!("Info: configuration CMake pour {label}..."));
+        let mut cfg_cmd = Command::new("cmake");
+        if cfg!(windows) {
+            if tool_in_path("clang") && tool_in_path("mingw32-make") {
+                cfg_cmd.args([
+                    "-S", ".", "-B", "build", "-G", "MinGW Makefiles",
+                    "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                ]);
+            } else if tool_in_path("gcc") && tool_in_path("mingw32-make") {
+                cfg_cmd.args([
+                    "-S", ".", "-B", "build", "-G", "MinGW Makefiles",
+                    "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                ]);
+            } else if tool_in_path("clang") && tool_in_path("ninja") {
+                cfg_cmd.args([
+                    "-S", ".", "-B", "build", "-G", "Ninja",
+                    "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                ]);
+            } else {
+                cfg_cmd.args(["-S", ".", "-B", "build"]);
+            }
         } else {
-            cfg_cmd.args(["-S", ".", "-B", "build"]);
+            cfg_cmd.args(["-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"]);
         }
-    } else {
-        cfg_cmd.args(["-S", ".", "-B", "build"]);
-    }
-    let cfg = cfg_cmd.current_dir(dir).output();
-    if let Ok(out) = cfg {
-        let _ = tx.send(AppEvent::TestLog {
-            id,
-            line: String::from_utf8_lossy(&out.stdout).to_string(),
-        });
-        if !out.status.success() {
-            let _ = tx.send(AppEvent::TestLog {
-                id,
-                line: String::from_utf8_lossy(&out.stderr).to_string(),
-            });
+        if let Ok(out) = cfg_cmd.current_dir(dir).output() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if !line.trim().is_empty() {
+                    log(line.to_owned());
+                }
+            }
+            if !out.status.success() {
+                for line in String::from_utf8_lossy(&out.stderr).lines() {
+                    if !line.trim().is_empty() {
+                        log(line.to_owned());
+                    }
+                }
+            }
         }
     }
+
     let jobs = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -296,19 +330,64 @@ fn ensure_cmake_built(
     if let Ok(out) = bld
         && !out.status.success()
     {
-        let _ = tx.send(AppEvent::TestLog {
-            id,
-            line: String::from_utf8_lossy(&out.stderr).to_string(),
-        });
+        for line in String::from_utf8_lossy(&out.stderr).lines() {
+            if !line.trim().is_empty() {
+                log(line.to_owned());
+            }
+        }
     }
 }
 
-fn ctest_args_for(dir: &Path) -> Vec<String> {
+pub fn ensure_binary_available(
+    base_exe: &str,
+    mut log: impl FnMut(String),
+) -> Option<PathBuf> {
+    if let Some(p) = find_binary(base_exe) {
+        return Some(p);
+    }
+    let _guard = BOOTSTRAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = find_binary(base_exe) {
+        return Some(p);
+    }
+    if !tool_in_path("cmake") {
+        return None;
+    }
+    let dir = zcstream_dir();
+    ensure_repo_present("zcstream", &dir, &mut log);
+    if dir.is_dir() {
+        run_cmake_configure_and_build(&dir, "zcstream/build", &mut log);
+    }
+    find_binary(base_exe)
+}
+
+fn ensure_repo_and_cmake_built(
+    id: TestTargetId,
+    repo_name: &str,
+    dir: &Path,
+    label: &str,
+    tx: &Sender<AppEvent>,
+    waker: &Option<Waker>,
+) {
+    let _guard = BOOTSTRAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut log = |line: String| {
+        let _ = tx.send(AppEvent::TestLog { id, line });
+        wake(waker);
+    };
+    ensure_repo_present(repo_name, dir, &mut log);
+    if dir.is_dir() {
+        run_cmake_configure_and_build(dir, label, &mut log);
+    }
+}
+
+fn ctest_args_for(dir: &Path, verbose: bool) -> Vec<String> {
     let mut args = vec![
         "--test-dir".into(),
         "build".into(),
         "--output-on-failure".into(),
     ];
+    if verbose {
+        args.push("-V".into());
+    }
     if dir.join("build").join("Release").is_dir() {
         args.push("-C".into());
         args.push("Release".into());
@@ -322,37 +401,37 @@ pub fn spawn_test(id: TestTargetId, tx: Sender<AppEvent>, waker: Option<Waker>) 
         let (program, args, cwd): (&str, Vec<String>, PathBuf) = match id {
             TestTargetId::StreamingBridge => {
                 let dir = zcstream_dir();
-                ensure_cmake_built(id, &dir, "zcstream/build", &tx, &waker);
-                let args = ctest_args_for(&dir);
+                ensure_repo_and_cmake_built(id, "zcstream", &dir, "zcstream/build", &tx, &waker);
+                let args = ctest_args_for(&dir, false);
                 ("ctest", args, dir)
             }
             TestTargetId::ZcvidCodec => {
                 let dir = zcvid_dir();
-                if cfg!(windows) && tool_in_path("mingw32-make") && (tool_in_path("clang") || tool_in_path("gcc")) {
+                if tool_in_path("cmake") && tool_in_path("ctest") {
+                    ensure_repo_and_cmake_built(id, "zcvid", &dir, "zcvid/build", &tx, &waker);
+                    let args = ctest_args_for(&dir, true);
+                    ("ctest", args, dir)
+                } else if cfg!(windows) && tool_in_path("mingw32-make") && (tool_in_path("clang") || tool_in_path("gcc")) {
                     let cc = if tool_in_path("clang") {
                         "CC=clang"
                     } else {
                         "CC=gcc"
                     };
                     ("mingw32-make", vec![cc.into(), "test".into()], dir)
-                } else if !cfg!(windows) && tool_in_path("make") {
-                    ("make", vec!["test".into()], dir)
                 } else {
-                    ensure_cmake_built(id, &dir, "zcvid/build", &tx, &waker);
-                    let args = ctest_args_for(&dir);
-                    ("ctest", args, dir)
+                    ("make", vec!["test".into()], dir)
                 }
             }
             TestTargetId::ZcrudpCore => {
                 let dir = zcrudp_dir();
-                ensure_cmake_built(id, &dir, "zcrudp/build", &tx, &waker);
-                let args = ctest_args_for(&dir);
+                ensure_repo_and_cmake_built(id, "zcrudp", &dir, "zcrudp/build", &tx, &waker);
+                let args = ctest_args_for(&dir, false);
                 ("ctest", args, dir)
             }
             TestTargetId::Zpsync => {
                 let dir = zpsync_dir();
-                ensure_cmake_built(id, &dir, "zpsync/build", &tx, &waker);
-                let args = ctest_args_for(&dir);
+                ensure_repo_and_cmake_built(id, "zpsync", &dir, "zpsync/build", &tx, &waker);
+                let args = ctest_args_for(&dir, false);
                 ("ctest", args, dir)
             }
         };

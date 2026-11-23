@@ -13,12 +13,34 @@ pub fn workspace_root() -> PathBuf {
         }
     }
     let has_repos = |p: &Path| {
-        p.join("zcstream").is_dir() || p.join("zcvid").is_dir() || p.join("zcrudp").is_dir()
+        [
+            "zcstream",
+            "zcstream-main",
+            "zcvid",
+            "zcvid-main",
+            "zcrudp",
+            "zcrudp-main",
+            "zpsync",
+            "zpsync-main",
+            "zcstream-app",
+            "zcstream-app-main",
+        ]
+        .iter()
+        .any(|d| p.join(d).is_dir())
+    };
+    let is_single_repo_root = |p: &Path| {
+        (p.join("Cargo.toml").is_file() || p.join("src").join("stream_live.c").is_file())
+            && !p.join("zcstream").is_dir()
     };
     if let Ok(exe) = std::env::current_exe() {
         for anc in exe.ancestors().skip(1) {
             if has_repos(anc) {
                 return anc.to_path_buf();
+            }
+            if is_single_repo_root(anc)
+                && let Some(parent) = anc.parent()
+            {
+                return parent.to_path_buf();
             }
         }
     }
@@ -27,38 +49,47 @@ pub fn workspace_root() -> PathBuf {
             if has_repos(anc) {
                 return anc.to_path_buf();
             }
+            if is_single_repo_root(anc)
+                && let Some(parent) = anc.parent()
+            {
+                return parent.to_path_buf();
+            }
         }
+        return cwd;
     }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    PathBuf::from(".")
 }
 
 pub fn find_repo_dir_in(name: &str, root: &Path, exe_dir: Option<&Path>) -> PathBuf {
-    let direct = root.join(name);
-    if direct.is_dir() {
-        return direct;
-    }
-    if let Some(ed) = exe_dir {
-        let beside = ed.join(name);
-        if beside.is_dir() {
-            return beside;
+    for suffix in ["", "-main", "-master"] {
+        let cand = root.join(format!("{name}{suffix}"));
+        if cand.is_dir() {
+            return cand;
         }
     }
-    let fetched = root
-        .join("zcstream")
-        .join("build")
-        .join("_deps")
-        .join(format!("{name}-src"));
-    if fetched.is_dir() {
-        return fetched;
+    if let Some(ed) = exe_dir {
+        for suffix in ["", "-main", "-master"] {
+            let beside = ed.join(format!("{name}{suffix}"));
+            if beside.is_dir() {
+                return beside;
+            }
+        }
     }
-    let nested = root.join("zcstream").join("deps").join(name);
-    if nested.is_dir() {
-        return nested;
+    for zc_name in ["zcstream", "zcstream-main", "zcstream-master"] {
+        let fetched = root
+            .join(zc_name)
+            .join("build")
+            .join("_deps")
+            .join(format!("{name}-src"));
+        if fetched.is_dir() {
+            return fetched;
+        }
+        let nested = root.join(zc_name).join("deps").join(name);
+        if nested.is_dir() {
+            return nested;
+        }
     }
-    direct
+    root.join(name)
 }
 
 pub fn find_repo_dir(name: &str) -> PathBuf {
@@ -111,7 +142,9 @@ pub fn find_binary_in(
 
     for build_base in [
         root.join("zcstream").join("build"),
+        root.join("zcstream-main").join("build"),
         root.join("zpsync").join("build"),
+        root.join("zpsync-main").join("build"),
         root.join("zcstream-app").join("zcstream").join("build"),
     ] {
         dirs.push(build_base.clone());

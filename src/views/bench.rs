@@ -27,7 +27,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
     } else if pipe_present {
         ("Disponible", BadgeVariant::Accent)
     } else {
-        ("Binaire absent", BadgeVariant::Neutral)
+        ("Auto-build au lancement", BadgeVariant::Subtle)
     };
 
     let pipeline_bar = panel(
