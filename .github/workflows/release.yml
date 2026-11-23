@@ -1,0 +1,332 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+        type: string
+      prerelease:
+        description: 'Mark release as prerelease'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-suite:
+    name: Build & Test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            os: windows-latest
+            portable: "OFF"
+            archive_ext: zip
+          - target: windows-arm64
+            os: windows-11-arm
+            portable: "ON"
+            archive_ext: zip
+          - target: linux-x64
+            os: ubuntu-24.04
+            portable: "ON"
+            archive_ext: tar.gz
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            portable: "ON"
+            archive_ext: tar.gz
+
+    steps:
+      - name: Determine release tag
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          PKG_NAME="zcstream-suite-${TAG}-${{ matrix.target }}"
+          echo "pkg_name=${PKG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "archive=${PKG_NAME}.${{ matrix.archive_ext }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout zcstream-app
+        uses: actions/checkout@v4
+        with:
+          path: zcstream-app
+
+      - name: Checkout zcrudp
+        uses: actions/checkout@v4
+        with:
+          repository: i-Charlys/zcrudp
+          path: zcrudp
+
+      - name: Checkout zcvid
+        uses: actions/checkout@v4
+        with:
+          repository: i-Charlys/zcvid
+          path: zcvid
+
+      - name: Checkout zpsync
+        uses: actions/checkout@v4
+        with:
+          repository: i-Charlys/zpsync
+          path: zpsync
+
+      - name: Checkout zcstream
+        uses: actions/checkout@v4
+        with:
+          repository: i-Charlys/zcstream
+          path: zcstream
+
+      - name: Install Linux GUI & Vulkan system dependencies
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - name: Set up MSYS2 CLANG64 (Windows x64)
+        if: matrix.target == 'windows-x64'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: false
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zcstream-app
+
+      - name: Build & test C/C++ stack (Windows x64 CLANG64 GPU)
+        if: matrix.target == 'windows-x64'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          STAGE="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.pkg_name }}"
+          mkdir -p "$STAGE"
+
+          cmake -S zcrudp -B zcrudp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+          cmake --build zcrudp/build --parallel
+          ctest --test-dir zcrudp/build --output-on-failure
+
+          cmake -S zpsync -B zpsync/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+          cmake --build zpsync/build --parallel
+          ctest --test-dir zpsync/build --output-on-failure
+
+          cmake -S zcvid -B zcvid/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+          cmake --build zcvid/build --parallel
+          ctest --test-dir zcvid/build --output-on-failure
+
+          cmake -S zcstream -B zcstream/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS="-static" \
+            -DZCRUDP_PORTABLE_CODEC=OFF
+          cmake --build zcstream/build --parallel
+          ctest --test-dir zcstream/build --output-on-failure
+          cmake --install zcstream/build --prefix "$STAGE"
+
+      - name: Build & test C/C++ stack (Windows ARM64 MSVC Portable)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $Stage = "${{ github.workspace }}\${{ steps.meta.outputs.pkg_name }}"
+          New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+
+          cmake -S zcrudp -B zcrudp/build -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build zcrudp/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir zcrudp/build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          cmake -S zpsync -B zpsync/build -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build zpsync/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir zpsync/build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build zcvid/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir zcvid/build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          cmake -S zcstream -B zcstream/build -DCMAKE_BUILD_TYPE=Release -DZCRUDP_PORTABLE_CODEC=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build zcstream/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir zcstream/build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install zcstream/build --config Release --prefix "$Stage"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build & test C/C++ stack (Linux)
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          STAGE="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.pkg_name }}"
+          mkdir -p "$STAGE"
+
+          cmake -S zcrudp -B zcrudp/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build zcrudp/build --parallel
+          ctest --test-dir zcrudp/build --output-on-failure
+
+          cmake -S zpsync -B zpsync/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build zpsync/build --parallel
+          ctest --test-dir zpsync/build --output-on-failure
+
+          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build zcvid/build --parallel
+          ctest --test-dir zcvid/build --output-on-failure
+
+          cmake -S zcstream -B zcstream/build -DCMAKE_BUILD_TYPE=Release -DZCRUDP_PORTABLE_CODEC=ON
+          cmake --build zcstream/build --parallel
+          ctest --test-dir zcstream/build --output-on-failure
+          cmake --install zcstream/build --prefix "$STAGE"
+
+      - name: Test & build zcstream-app GUI
+        working-directory: zcstream-app
+        run: |
+          cargo test --release
+          cargo build --release
+
+      - name: Assemble & package portable bundle (Windows)
+        if: startsWith(matrix.target, 'windows-')
+        shell: pwsh
+        run: |
+          $PkgName = "${{ steps.meta.outputs.pkg_name }}"
+          $Stage = "${{ github.workspace }}\$PkgName"
+          Copy-Item -Force "zcstream-app\target\release\zcstream-app.exe" "$Stage\zcstream-app.exe"
+          @(
+            "zcstream / RUDP Suite (${{ steps.meta.outputs.tag }} - ${{ matrix.target }})"
+            "=================================================================="
+            "1. Extract this archive anywhere."
+            "2. Run zcstream-app.exe for the GUI (or run zcrudp_stream.exe / zpsync_peer.exe from CLI)."
+            "All required binaries and HLSL shaders (when applicable) are bundled in this folder."
+          ) | Set-Content -Path "$Stage\README-INSTALL.txt" -Encoding UTF8
+          Compress-Archive -Path $Stage -DestinationPath "${{ github.workspace }}\${{ steps.meta.outputs.archive }}" -Force
+
+      - name: Assemble & package portable bundle (Linux)
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          PKG_NAME="${{ steps.meta.outputs.pkg_name }}"
+          STAGE="${GITHUB_WORKSPACE}/${PKG_NAME}"
+          cp zcstream-app/target/release/zcstream-app "${STAGE}/zcstream-app"
+          chmod +x "${STAGE}/zcstream-app"
+          printf '%s\n' \
+            "zcstream / RUDP Suite (${{ steps.meta.outputs.tag }} - ${{ matrix.target }})" \
+            "==================================================================" \
+            "1. Extract this archive anywhere: tar -xzf <archive>.tar.gz" \
+            "2. cd <folder> && ./zcstream-app" \
+            "All required binaries are bundled in this folder." \
+            > "${STAGE}/README-INSTALL.txt"
+          tar -czf "${{ github.workspace }}/${{ steps.meta.outputs.archive }}" -C "${GITHUB_WORKSPACE}" "${PKG_NAME}"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.archive }}
+          path: ${{ github.workspace }}/${{ steps.meta.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine release metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+            PRE="${{ inputs.prerelease }}"
+          else
+            TAG="${{ github.ref_name }}"
+            case "$TAG" in
+              *-*) PRE="true" ;;
+              *)   PRE="false" ;;
+            esac
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRE}" >> "$GITHUB_OUTPUT"
+
+      - name: Download built bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: artifacts
+        run: |
+          sha256sum zcstream-suite-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/*
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: zcstream Suite ${{ steps.meta.outputs.tag }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            ## Prebuilt Multi-Platform Bundles (Zero-Config)
+
+            Download the archive for your platform, extract it, and run `zcstream-app` directly — no manual cloning, compiling, or path configuration needed.
+
+            | Platform | Archive | Contents |
+            |---|---|---|
+            | Windows x64 (GPU D3D11/NVENC + Zcvid HLSL) | `zcstream-suite-${{ steps.meta.outputs.tag }}-windows-x64.zip` | `zcstream-app.exe`, `zcrudp_stream.exe`, benchmarks, `zpsync_peer.exe`, `shaders/` |
+            | Windows ARM64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-windows-arm64.zip` | `zcstream-app.exe`, `zcrudp_stream.exe`, `zcrudp_zcvid_bench.exe`, `zpsync_peer.exe` |
+            | Linux x64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-linux-x64.tar.gz` | `zcstream-app`, `zcrudp_stream`, `zcrudp_zcvid_bench`, `zpsync_peer` |
+            | Linux ARM64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-linux-arm64.tar.gz` | `zcstream-app`, `zcrudp_stream`, `zcrudp_zcvid_bench`, `zpsync_peer` |
+
+            Verify downloads with `SHA256SUMS.txt` or GitHub artifact build provenance attestations (`gh attestation verify`).
+          files: |
+            artifacts/zcstream-suite-*
+            artifacts/SHA256SUMS.txt
