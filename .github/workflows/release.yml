@@ -147,7 +147,7 @@ jobs:
           cmake --build zpsync/build --parallel
           ctest --test-dir zpsync/build --output-on-failure
 
-          cmake -S zcvid -B zcvid/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+          cmake -S zcvid -B zcvid/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DZCVID_BUILD_BENCH=OFF
           cmake --build zcvid/build --parallel
           ctest --test-dir zcvid/build --output-on-failure
 
@@ -182,7 +182,7 @@ jobs:
           ctest --test-dir zpsync/build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release
+          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release -DZCVID_BUILD_BENCH=OFF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build zcvid/build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -213,7 +213,7 @@ jobs:
           cmake --build zpsync/build --parallel
           ctest --test-dir zpsync/build --output-on-failure
 
-          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release
+          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release -DZCVID_BUILD_BENCH=OFF
           cmake --build zcvid/build --parallel
           ctest --test-dir zcvid/build --output-on-failure
 
