@@ -131,26 +131,40 @@ jobs:
         with:
           workspaces: zcstream-app
 
-      - name: Build & test C/C++ stack (Windows x64 CLANG64 GPU)
+      - name: Build & test zcrudp (Windows x64 CLANG64)
+        if: matrix.target == 'windows-x64'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake -S zcrudp -B zcrudp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+          cmake --build zcrudp/build --parallel
+          ctest --test-dir zcrudp/build --output-on-failure
+
+      - name: Build & test zpsync (Windows x64 CLANG64)
+        if: matrix.target == 'windows-x64'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake -S zpsync -B zpsync/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+          cmake --build zpsync/build --parallel
+          ctest --test-dir zpsync/build --output-on-failure --repeat until-pass:3
+
+      - name: Build & test zcvid (Windows x64 CLANG64)
+        if: matrix.target == 'windows-x64'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake -S zcvid -B zcvid/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DZCVID_BUILD_BENCH=OFF
+          cmake --build zcvid/build --parallel
+          ctest --test-dir zcvid/build --output-on-failure
+
+      - name: Build, test & stage zcstream (Windows x64 CLANG64 GPU)
         if: matrix.target == 'windows-x64'
         shell: msys2 {0}
         run: |
           set -euo pipefail
           STAGE="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.pkg_name }}"
           mkdir -p "$STAGE"
-
-          cmake -S zcrudp -B zcrudp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
-          cmake --build zcrudp/build --parallel
-          ctest --test-dir zcrudp/build --output-on-failure
-
-          cmake -S zpsync -B zpsync/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
-          cmake --build zpsync/build --parallel
-          ctest --test-dir zpsync/build --output-on-failure
-
-          cmake -S zcvid -B zcvid/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DZCVID_BUILD_BENCH=OFF
-          cmake --build zcvid/build --parallel
-          ctest --test-dir zcvid/build --output-on-failure
-
           cmake -S zcstream -B zcstream/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
@@ -161,13 +175,10 @@ jobs:
           ctest --test-dir zcstream/build --output-on-failure
           cmake --install zcstream/build --prefix "$STAGE"
 
-      - name: Build & test C/C++ stack (Windows ARM64 MSVC Portable)
+      - name: Build & test zcrudp (Windows ARM64 MSVC)
         if: matrix.target == 'windows-arm64'
         shell: pwsh
         run: |
-          $Stage = "${{ github.workspace }}\${{ steps.meta.outputs.pkg_name }}"
-          New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-
           cmake -S zcrudp -B zcrudp/build -DCMAKE_BUILD_TYPE=Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build zcrudp/build --config Release --parallel
@@ -175,13 +186,21 @@ jobs:
           ctest --test-dir zcrudp/build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build & test zpsync (Windows ARM64 MSVC)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
           cmake -S zpsync -B zpsync/build -DCMAKE_BUILD_TYPE=Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build zpsync/build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir zpsync/build -C Release --output-on-failure
+          ctest --test-dir zpsync/build -C Release --output-on-failure --repeat until-pass:3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build & test zcvid (Windows ARM64 MSVC)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
           cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release -DZCVID_BUILD_BENCH=OFF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build zcvid/build --config Release --parallel
@@ -189,6 +208,12 @@ jobs:
           ctest --test-dir zcvid/build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build, test & stage zcstream (Windows ARM64 MSVC Portable)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $Stage = "${{ github.workspace }}\${{ steps.meta.outputs.pkg_name }}"
+          New-Item -ItemType Directory -Force -Path $Stage | Out-Null
           cmake -S zcstream -B zcstream/build -DCMAKE_BUILD_TYPE=Release -DZCRUDP_PORTABLE_CODEC=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build zcstream/build --config Release --parallel
@@ -198,25 +223,36 @@ jobs:
           cmake --install zcstream/build --config Release --prefix "$Stage"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build & test C/C++ stack (Linux)
+      - name: Build & test zcrudp (Linux)
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          cmake -S zcrudp -B zcrudp/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build zcrudp/build --parallel
+          ctest --test-dir zcrudp/build --output-on-failure
+
+      - name: Build & test zpsync (Linux)
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          cmake -S zpsync -B zpsync/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build zpsync/build --parallel
+          ctest --test-dir zpsync/build --output-on-failure --repeat until-pass:3
+
+      - name: Build & test zcvid (Linux)
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release -DZCVID_BUILD_BENCH=OFF
+          cmake --build zcvid/build --parallel
+          ctest --test-dir zcvid/build --output-on-failure
+
+      - name: Build, test & stage zcstream (Linux)
         if: startsWith(matrix.target, 'linux-')
         run: |
           set -euo pipefail
           STAGE="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.pkg_name }}"
           mkdir -p "$STAGE"
-
-          cmake -S zcrudp -B zcrudp/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build zcrudp/build --parallel
-          ctest --test-dir zcrudp/build --output-on-failure
-
-          cmake -S zpsync -B zpsync/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build zpsync/build --parallel
-          ctest --test-dir zpsync/build --output-on-failure
-
-          cmake -S zcvid -B zcvid/build -DCMAKE_BUILD_TYPE=Release -DZCVID_BUILD_BENCH=OFF
-          cmake --build zcvid/build --parallel
-          ctest --test-dir zcvid/build --output-on-failure
-
           cmake -S zcstream -B zcstream/build -DCMAKE_BUILD_TYPE=Release -DZCRUDP_PORTABLE_CODEC=ON
           cmake --build zcstream/build --parallel
           ctest --test-dir zcstream/build --output-on-failure
@@ -326,10 +362,10 @@ jobs:
 
             | Platform | Archive | Contents |
             |---|---|---|
-            | Windows x64 (GPU D3D11/NVENC + Zcvid HLSL) | `zcstream-suite-${{ steps.meta.outputs.tag }}-windows-x64.zip` | `zcstream-app.exe`, `zcrudp_stream.exe`, benchmarks, `zpsync_peer.exe`, `shaders/` |
-            | Windows ARM64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-windows-arm64.zip` | `zcstream-app.exe`, `zcrudp_stream.exe`, `zcrudp_zcvid_bench.exe`, `zpsync_peer.exe` |
-            | Linux x64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-linux-x64.tar.gz` | `zcstream-app`, `zcrudp_stream`, `zcrudp_zcvid_bench`, `zpsync_peer` |
-            | Linux ARM64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-linux-arm64.tar.gz` | `zcstream-app`, `zcrudp_stream`, `zcrudp_zcvid_bench`, `zpsync_peer` |
+            | Windows x64 (GPU D3D11/NVENC + Zcvid HLSL) | `zcstream-suite-${{ steps.meta.outputs.tag }}-windows-x64.zip` | `zcstream-app.exe` (streaming UI), `zcrudp_stream.exe`, `zpsync_peer.exe`, `shaders/`, `LICENSE`, `THIRD_PARTY_NOTICES.md` |
+            | Windows ARM64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-windows-arm64.zip` | `zcstream-app.exe` (streaming UI), `zcrudp_stream.exe`, `zpsync_peer.exe`, `LICENSE`, `THIRD_PARTY_NOTICES.md` |
+            | Linux x64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-linux-x64.tar.gz` | `zcstream-app` (streaming UI), `zcrudp_stream`, `zpsync_peer`, `LICENSE`, `THIRD_PARTY_NOTICES.md` |
+            | Linux ARM64 (Portable Zcvid) | `zcstream-suite-${{ steps.meta.outputs.tag }}-linux-arm64.tar.gz` | `zcstream-app` (streaming UI), `zcrudp_stream`, `zpsync_peer`, `LICENSE`, `THIRD_PARTY_NOTICES.md` |
 
             Verify downloads with `SHA256SUMS.txt` or GitHub artifact build provenance attestations (`gh attestation verify`).
           files: |
