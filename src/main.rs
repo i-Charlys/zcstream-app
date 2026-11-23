@@ -141,7 +141,10 @@ mod tests {
         let pyro_args = pyro_bench.build_bench_args();
         assert!(pyro_args.windows(2).any(|w| w == ["--fps", "240"]));
         assert!(pyro_args.windows(2).any(|w| w == ["--target-bytes", "31250"]));
-        assert!(pyro_args.iter().any(|a| a == "--no-rio"));
+        assert_eq!(
+            pyro_args.iter().any(|a| a == "--no-rio"),
+            crate::state::host_supports_rio()
+        );
         let mut rt_pyro_bench = Runtime::new(pyro_bench, view, (1200.0, 820.0), env);
         rt_pyro_bench.frame(0.0);
         assert!(rt_pyro_bench.find("btn_run_bench").is_some());
