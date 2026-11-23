@@ -1,13 +1,188 @@
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, atomic::AtomicBool};
 
 use rune::{TextEdit, Waker};
 
-pub const ZCSTREAM_BUILD_DIR: &str = r"C:\Users\charl\Documents\RUDP\zcstream\build";
-pub const ZCVID_DIR: &str = r"C:\Users\charl\Documents\RUDP\zcvid";
-pub const ZCRUDP_DIR: &str = r"C:\Users\charl\Documents\RUDP\zcrudp";
-pub const ZPSYNC_DIR: &str = r"C:\Users\charl\Documents\RUDP\zpsync";
-pub const ZPSYNC_BUILD_DIR: &str = r"C:\Users\charl\Documents\RUDP\zpsync\build";
+pub fn workspace_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("ZCSTREAM_ROOT") {
+        let p = PathBuf::from(root);
+        if p.exists() {
+            return p;
+        }
+    }
+    let has_repos = |p: &Path| {
+        p.join("zcstream").is_dir() || p.join("zcvid").is_dir() || p.join("zcrudp").is_dir()
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        for anc in exe.ancestors().skip(1) {
+            if has_repos(anc) {
+                return anc.to_path_buf();
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        for anc in cwd.ancestors() {
+            if has_repos(anc) {
+                return anc.to_path_buf();
+            }
+        }
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn find_repo_dir_in(name: &str, root: &Path, exe_dir: Option<&Path>) -> PathBuf {
+    let direct = root.join(name);
+    if direct.is_dir() {
+        return direct;
+    }
+    if let Some(ed) = exe_dir {
+        let beside = ed.join(name);
+        if beside.is_dir() {
+            return beside;
+        }
+    }
+    let fetched = root
+        .join("zcstream")
+        .join("build")
+        .join("_deps")
+        .join(format!("{name}-src"));
+    if fetched.is_dir() {
+        return fetched;
+    }
+    let nested = root.join("zcstream").join("deps").join(name);
+    if nested.is_dir() {
+        return nested;
+    }
+    direct
+}
+
+pub fn find_repo_dir(name: &str) -> PathBuf {
+    let root = workspace_root();
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    find_repo_dir_in(name, &root, exe_dir.as_deref())
+}
+
+pub fn zcstream_dir() -> PathBuf {
+    find_repo_dir("zcstream")
+}
+
+pub fn zcvid_dir() -> PathBuf {
+    find_repo_dir("zcvid")
+}
+
+pub fn zcrudp_dir() -> PathBuf {
+    find_repo_dir("zcrudp")
+}
+
+pub fn zpsync_dir() -> PathBuf {
+    find_repo_dir("zpsync")
+}
+
+pub fn bin_name(base: &str) -> String {
+    format!("{base}{}", std::env::consts::EXE_SUFFIX)
+}
+
+pub fn find_binary_in(
+    base: &str,
+    env_bin_dir: Option<&Path>,
+    exe_dir: Option<&Path>,
+    root: &Path,
+    path_env: Option<&OsStr>,
+) -> Option<PathBuf> {
+    let name = bin_name(base);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Some(dir) = env_bin_dir {
+        dirs.push(dir.to_path_buf());
+    }
+    if let Some(ed) = exe_dir {
+        dirs.push(ed.to_path_buf());
+        dirs.push(ed.join("bin"));
+    }
+
+    dirs.push(root.join("dist"));
+
+    for build_base in [
+        root.join("zcstream").join("build"),
+        root.join("zpsync").join("build"),
+        root.join("zcstream-app").join("zcstream").join("build"),
+    ] {
+        dirs.push(build_base.clone());
+        dirs.push(build_base.join("Release"));
+        dirs.push(build_base.join("RelWithDebInfo"));
+        dirs.push(build_base.join("Debug"));
+    }
+
+    for dir in dirs {
+        let candidate = dir.join(&name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    if let Some(paths) = path_env {
+        for dir in std::env::split_paths(paths) {
+            let candidate = dir.join(&name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+pub fn find_binary(base: &str) -> Option<PathBuf> {
+    let env_bin_dir = std::env::var_os("ZCSTREAM_BIN_DIR").map(PathBuf::from);
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let root = workspace_root();
+    let path_env = std::env::var_os("PATH");
+    find_binary_in(
+        base,
+        env_bin_dir.as_deref(),
+        exe_dir.as_deref(),
+        &root,
+        path_env.as_deref(),
+    )
+}
+
+pub fn host_os_label() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "Windows",
+        "linux" => "Linux",
+        "macos" => "macOS",
+        other => other,
+    }
+}
+
+pub fn host_arch_label() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "ARM64",
+        other => other,
+    }
+}
+
+pub fn host_platform_badge() -> String {
+    format!("{} {}", host_os_label(), host_arch_label())
+}
+
+pub fn host_supports_nvenc() -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+}
+
+pub fn host_supports_rio() -> bool {
+    cfg!(target_os = "windows")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -20,7 +195,7 @@ pub enum Tab {
 pub enum PipelineKind {
     Nvenc,
     Pyrowave,
-    Ternary,
+    Zcvid,
 }
 
 impl PipelineKind {
@@ -28,23 +203,62 @@ impl PipelineKind {
         match self {
             PipelineKind::Nvenc => "NVENC Direct (H.264)",
             PipelineKind::Pyrowave => "Pyrowave (Wavelets)",
-            PipelineKind::Ternary => "Ternary HLSL (VRAM)",
+            PipelineKind::Zcvid => {
+                if cfg!(target_os = "windows") {
+                    "Zcvid Unified (GPU)"
+                } else {
+                    "Zcvid Unified (Portable)"
+                }
+            }
         }
     }
 
-    pub fn exe_name(self) -> &'static str {
+    pub fn base_exe_name(self) -> &'static str {
         match self {
-            PipelineKind::Nvenc => "zcrudp_stream_bench.exe",
-            PipelineKind::Pyrowave => "zcrudp_pyrowave_bench.exe",
-            PipelineKind::Ternary => "zcrudp_ternary_bench.exe",
+            PipelineKind::Nvenc => "zcrudp_stream_bench",
+            PipelineKind::Pyrowave => "zcrudp_pyrowave_bench",
+            PipelineKind::Zcvid => "zcrudp_zcvid_bench",
         }
+    }
+
+    pub fn exe_name(self) -> String {
+        bin_name(self.base_exe_name())
+    }
+
+    pub fn is_supported_on_platform(self) -> bool {
+        match self {
+            PipelineKind::Nvenc => host_supports_nvenc(),
+            PipelineKind::Pyrowave | PipelineKind::Zcvid => true,
+        }
+    }
+
+    pub fn is_binary_present(self) -> bool {
+        find_binary(self.base_exe_name()).is_some()
     }
 
     pub fn summary(self) -> &'static str {
         match self {
-            PipelineKind::Nvenc => "nvEncodeAPI64 + D3D11/DXGI Zero-Copy (~3.3 ms p50)",
-            PipelineKind::Pyrowave => "Vulkan Compute Wavelets + Winsock RIO (~1.3 ms p50)",
-            PipelineKind::Ternary => "Compute Shaders cs_5_0 YCbCr + Motion Vectors + Leaky Integrator",
+            PipelineKind::Nvenc => {
+                if host_supports_nvenc() {
+                    "nvEncodeAPI64 + D3D11/DXGI Zero-Copy (~3.3 ms p50)"
+                } else {
+                    "Indisponible hors Windows x64 (utilisez Zcvid Unified ou Pyrowave)"
+                }
+            }
+            PipelineKind::Pyrowave => {
+                if host_supports_rio() {
+                    "Vulkan Compute Wavelets + Winsock RIO (~1.3 ms p50)"
+                } else {
+                    "Vulkan Compute Wavelets + UDP POSIX"
+                }
+            }
+            PipelineKind::Zcvid => {
+                if host_supports_rio() {
+                    "Codec unique HLSL 4x4/8x8 Transform RDO + QPel MV + CABAC + Winsock RIO"
+                } else {
+                    "Codec unique portable C11 4x4/8x8 Transform RDO + QPel MV + CABAC + UDP POSIX"
+                }
+            }
         }
     }
 }
@@ -161,7 +375,7 @@ impl TestStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TestTargetId {
     StreamingBridge,
-    TernaryCodec,
+    ZcvidCodec,
     ZcrudpCore,
     Zpsync,
 }
@@ -191,14 +405,23 @@ pub enum NetConnectMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamCodec {
     Nvenc,
-    Ternary,
+    Pyrowave,
+    Zcvid,
 }
 
 impl StreamCodec {
     pub fn as_arg(self) -> &'static str {
         match self {
             StreamCodec::Nvenc => "nvenc",
-            StreamCodec::Ternary => "ternary",
+            StreamCodec::Pyrowave => "pyrowave",
+            StreamCodec::Zcvid => "zcvid",
+        }
+    }
+
+    pub fn is_supported_on_platform(self) -> bool {
+        match self {
+            StreamCodec::Nvenc => host_supports_nvenc(),
+            StreamCodec::Pyrowave | StreamCodec::Zcvid => true,
         }
     }
 }
@@ -212,7 +435,6 @@ pub struct NetSessionStats {
     pub frames_rx: u64,
     pub fec_recovered: u64,
     pub frames_dropped: u64,
-    pub ooo_packets: u64,
     pub packets_total: u64,
     pub status_msg: String,
     pub zp_path: String,
@@ -241,8 +463,11 @@ pub struct AppState {
     // Benchmarks tab
     pub pipeline: PipelineKind,
     pub res_idx: usize,
+    pub bench_fps: u32,
+    pub bench_fps_edit: TextEdit,
     pub frames: usize,
     pub bitrate_mbps: u32,
+    pub bench_bitrate_edit: TextEdit,
     pub fec_shards: u8,
     pub use_rio: bool,
     pub live_window: bool,
@@ -277,7 +502,9 @@ pub struct AppState {
     pub zp_probing: bool,
     pub zp_probe_info: Option<String>,
     pub net_fps: u32,
+    pub net_fps_edit: TextEdit,
     pub net_bitrate_mbps: u32,
+    pub net_bitrate_edit: TextEdit,
     pub net_fec_shards: u8,
     pub net_use_rio: bool,
     pub net_stop: Option<Arc<AtomicBool>>,
@@ -292,6 +519,10 @@ impl Default for AppState {
         let net_port_edit = TextEdit::new("9900");
         let net_width_edit = TextEdit::new("1920");
         let net_height_edit = TextEdit::new("1080");
+        let bench_fps_edit = TextEdit::new("120");
+        let bench_bitrate_edit = TextEdit::new("");
+        let net_fps_edit = TextEdit::new("120");
+        let net_bitrate_edit = TextEdit::new("");
         let zp_secret_edit = TextEdit::new("zcstream-p2p");
         let zp_peer_ip_edit = TextEdit::new("");
         let zp_peer_port_edit = TextEdit::new("0");
@@ -303,12 +534,15 @@ impl Default for AppState {
             waker: None,
             tx,
             rx,
-            pipeline: PipelineKind::Nvenc,
+            pipeline: PipelineKind::Zcvid,
             res_idx: 1, // 1920x1080
+            bench_fps: 120,
+            bench_fps_edit,
             frames: 240,
-            bitrate_mbps: 25,
+            bitrate_mbps: 50,
+            bench_bitrate_edit,
             fec_shards: 1,
-            use_rio: true,
+            use_rio: host_supports_rio(),
             live_window: false,
             measure_psnr: true,
             impair: NetImpair::default(),
@@ -321,16 +555,16 @@ impl Default for AppState {
             tests: vec![
                 TestEntry {
                     id: TestTargetId::StreamingBridge,
-                    name: "zcstream / video_bridge",
-                    subtitle: "ctest --test-dir zcstream/build (fragmentation & FEC GF(2^8))",
+                    name: "zcstream / portable + bridge",
+                    subtitle: "ctest --test-dir zcstream/build (fragmentation FEC + codec portable C11)",
                     status: TestStatus::Idle,
                     duration_ms: None,
                     logs: Vec::new(),
                 },
                 TestEntry {
-                    id: TestTargetId::TernaryCodec,
-                    name: "zcvid / ternary_codec",
-                    subtitle: "mingw32-make test (trit packing + codec AVX2/scalar)",
+                    id: TestTargetId::ZcvidCodec,
+                    name: "zcvid / zcvid_codec",
+                    subtitle: "make test (trit packing + codec SIMD/scalar + CPU GPU-dec + 18 preuves)",
                     status: TestStatus::Idle,
                     duration_ms: None,
                     logs: Vec::new(),
@@ -355,7 +589,7 @@ impl Default for AppState {
             selected_test: 0,
             net_role: NetRole::Sender,
             net_connect_mode: NetConnectMode::DirectUdp,
-            net_codec: StreamCodec::Nvenc,
+            net_codec: StreamCodec::Zcvid,
             net_res_idx: Some(1),
             net_width_edit,
             net_height_edit,
@@ -370,12 +604,18 @@ impl Default for AppState {
             zp_probing: false,
             zp_probe_info: None,
             net_fps: 120,
-            net_bitrate_mbps: 25,
+            net_fps_edit,
+            net_bitrate_mbps: 50,
+            net_bitrate_edit,
             net_fec_shards: 1,
-            net_use_rio: true,
+            net_use_rio: host_supports_rio(),
             net_stop: None,
             net_stats: NetSessionStats {
-                status_msg: "Prêt à lancer zcrudp_stream.exe (capture écran DXGI + GPU).".to_owned(),
+                status_msg: format!(
+                    "Prêt à lancer {} ({}).",
+                    bin_name("zcrudp_stream"),
+                    host_platform_badge()
+                ),
                 ..Default::default()
             },
             net_logs: Vec::new(),
@@ -384,8 +624,90 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Recommended auto bandwidth (Mbps) from pixel rate (matches zcrudp_stream).
+    pub fn auto_bitrate_mbps(width: u32, height: u32, fps: u32) -> u32 {
+        let px_per_sec = width as u64 * height as u64 * fps.max(1) as u64;
+        let auto = 20 + px_per_sec / 20_000_000;
+        (auto as u32).clamp(25, 200)
+    }
+
+    /// Minimum bandwidth (Mbps) required to sustain a given resolution and refresh rate cleanly.
+    pub fn min_mbps_for_mode(width: u32, height: u32, fps: u32) -> u32 {
+        let px_per_sec = width as u64 * height as u64 * fps.max(1) as u64;
+        let mbps = 3 + px_per_sec.div_ceil(25_000_000);
+        (mbps as u32).max(4)
+    }
+
+    pub fn effective_bench_fps(&self) -> u32 {
+        self.bench_fps_edit
+            .text
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v > 0)
+            .unwrap_or(self.bench_fps)
+            .clamp(1, 1000)
+    }
+
+    pub fn is_bench_bitrate_auto(&self) -> bool {
+        let raw = self.bench_bitrate_edit.text.trim();
+        raw.is_empty() || raw == "0"
+    }
+
+    pub fn effective_bench_bitrate_mbps(&self) -> u32 {
+        let res = RESOLUTIONS[self.res_idx];
+        let fps = self.effective_bench_fps();
+        if self.is_bench_bitrate_auto() {
+            return Self::auto_bitrate_mbps(res.width, res.height, fps);
+        }
+        self.bench_bitrate_edit
+            .text
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v > 0)
+            .unwrap_or(self.bitrate_mbps)
+            .clamp(1, 1000)
+    }
+
+    pub fn effective_net_dims(&self) -> (u32, u32) {
+        let w = self.net_width_edit.text.trim().parse::<u32>().unwrap_or(1920).max(64);
+        let h = self.net_height_edit.text.trim().parse::<u32>().unwrap_or(1080).max(64);
+        (w, h)
+    }
+
+    pub fn effective_net_fps(&self) -> u32 {
+        self.net_fps_edit
+            .text
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v > 0)
+            .unwrap_or(self.net_fps)
+            .clamp(1, 1000)
+    }
+
+    pub fn is_net_bitrate_auto(&self) -> bool {
+        let raw = self.net_bitrate_edit.text.trim();
+        raw.is_empty() || raw == "0"
+    }
+
+    pub fn effective_net_bitrate_mbps(&self) -> u32 {
+        if self.is_net_bitrate_auto() {
+            return 0; // auto (computed by zcrudp_stream or auto_bitrate_mbps)
+        }
+        self.net_bitrate_edit
+            .text
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(self.net_bitrate_mbps)
+            .min(1000)
+    }
+
     pub fn build_bench_args(&self) -> Vec<String> {
         let res = RESOLUTIONS[self.res_idx];
+        let fps = self.effective_bench_fps();
+        let bitrate_mbps = self.effective_bench_bitrate_mbps();
         let mut args = vec![
             "--width".into(),
             res.width.to_string(),
@@ -397,22 +719,31 @@ impl AppState {
 
         match self.pipeline {
             PipelineKind::Nvenc => {
+                args.push("--fps".into());
+                args.push(fps.to_string());
                 args.push("--bitrate".into());
-                args.push((self.bitrate_mbps as u64 * 1_000_000).to_string());
+                args.push((bitrate_mbps as u64 * 1_000_000).to_string());
                 if self.live_window {
                     args.push("--live".into());
                 }
             }
             PipelineKind::Pyrowave => {
-                // target-bytes per frame: bitrate_bps / (8 * 120)
-                let target_bytes = (self.bitrate_mbps as u64 * 1_000_000) / (8 * 120);
+                // target-bytes per frame: bitrate_bps / (8 * fps)
+                let target_bytes = (bitrate_mbps as u64 * 1_000_000) / (8 * fps.max(1) as u64);
+                args.push("--fps".into());
+                args.push(fps.to_string());
                 args.push("--target-bytes".into());
                 args.push(target_bytes.max(1000).to_string());
+                if host_supports_rio() && !self.use_rio {
+                    args.push("--no-rio".into());
+                }
             }
-            PipelineKind::Ternary => {
+            PipelineKind::Zcvid => {
+                args.push("--fps".into());
+                args.push(fps.to_string());
                 args.push("--bitrate".into());
-                args.push((self.bitrate_mbps as u64 * 1_000_000).to_string());
-                if !self.use_rio {
+                args.push((bitrate_mbps as u64 * 1_000_000).to_string());
+                if host_supports_rio() && !self.use_rio {
                     args.push("--no-rio".into());
                 }
                 if self.measure_psnr {

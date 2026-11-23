@@ -1,4 +1,6 @@
 /target
+/dist
+.cargo/config.toml
 **/*.rs.bk
 *.pdb
 *.log

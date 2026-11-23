@@ -7,7 +7,7 @@ use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Divider, Kit, SegmentedControl,
 };
 
-use crate::state::{AppState, Tab};
+use crate::state::{AppState, Tab, host_platform_badge};
 
 pub fn app_view(s: &AppState, k: &Kit) -> El {
     let tab_idx = match s.tab {
@@ -39,8 +39,13 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
                 )
                 .child(text("zcstream").font(k.ty.body_medium).color(k.c.text_strong))
                 .child(
-                    Badge::new("RUDP + GPU")
+                    Badge::new("RUDP + Vidéo")
                         .variant(BadgeVariant::Subtle)
+                        .build(k),
+                )
+                .child(
+                    Badge::new(host_platform_badge())
+                        .variant(BadgeVariant::Neutral)
                         .build(k),
                 ),
         )

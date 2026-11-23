@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -10,8 +10,7 @@ use std::time::Duration;
 use rune::Waker;
 
 use crate::state::{
-    AppEvent, NetConnectMode, NetRole, NetSessionStats, ZCSTREAM_BUILD_DIR, StreamCodec,
-    ZPSYNC_BUILD_DIR,
+    AppEvent, NetConnectMode, NetRole, NetSessionStats, StreamCodec, bin_name, find_binary,
 };
 
 #[derive(Clone, Debug)]
@@ -32,15 +31,21 @@ fn wake(waker: &Option<Waker>) {
 
 pub fn probe_zpsync_network(local_port: u16, tx: Sender<AppEvent>, waker: Option<Waker>) {
     thread::spawn(move || {
-        let exe_path = Path::new(ZPSYNC_BUILD_DIR).join("zpsync_peer.exe");
-        if !exe_path.exists() {
+        let peer_bin = bin_name("zpsync_peer");
+        let Some(exe_path) = find_binary("zpsync_peer") else {
             let _ = tx.send(AppEvent::ZpProbeDone {
-                summary: "zpsync_peer.exe introuvable".into(),
-                logs: vec![format!("Erreur: introuvable : {}", exe_path.display())],
+                summary: format!("{peer_bin} introuvable"),
+                logs: vec![format!(
+                    "Erreur: `{peer_bin}` introuvable. Lancez ./install.ps1 ou ./install.sh (ou définissez ZCSTREAM_BIN_DIR)."
+                )],
             });
             wake(&waker);
             return;
-        }
+        };
+        let work_dir = exe_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
 
         let mut args = vec!["--probe".to_owned()];
         if local_port > 0 {
@@ -51,7 +56,7 @@ pub fn probe_zpsync_network(local_port: u16, tx: Sender<AppEvent>, waker: Option
         let mut logs = vec![format!("$ {} {}", exe_path.display(), args.join(" "))];
         match Command::new(&exe_path)
             .args(&args)
-            .current_dir(ZPSYNC_BUILD_DIR)
+            .current_dir(&work_dir)
             .output()
         {
             Ok(out) => {
@@ -119,15 +124,18 @@ pub fn start_network_session(
     stop: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        let exe_path = Path::new(ZCSTREAM_BUILD_DIR).join("zcrudp_stream.exe");
-        if !exe_path.exists() {
+        let Some(exe_path) = find_binary("zcrudp_stream") else {
             let _ = tx.send(AppEvent::NetStopped(format!(
-                "Exécutable introuvable : {}",
-                exe_path.display()
+                "Exécutable `{}` introuvable. Lancez ./install.ps1 ou ./install.sh (ou définissez ZCSTREAM_BIN_DIR).",
+                bin_name("zcrudp_stream")
             )));
             wake(&waker);
             return;
-        }
+        };
+        let work_dir = exe_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
 
         let mut args = vec![
             "--role".to_owned(),
@@ -172,10 +180,9 @@ pub fn start_network_session(
             }
         }
 
+        args.extend(["--fps".to_owned(), fps.to_string()]);
         if role == NetRole::Sender {
             args.extend([
-                "--fps".to_owned(),
-                fps.to_string(),
                 "--bitrate".to_owned(),
                 bitrate_mbps.to_string(),
                 "--fec".to_owned(),
@@ -195,7 +202,7 @@ pub fn start_network_session(
 
         let mut cmd = Command::new(&exe_path);
         cmd.args(&args)
-            .current_dir(ZCSTREAM_BUILD_DIR)
+            .current_dir(&work_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -292,10 +299,10 @@ fn parse_stream_line(stats: &mut NetSessionStats, line: &str) -> bool {
                     stats.zp_path = val.trim().to_owned();
                 } else if let Some(val) = s.strip_prefix("Session=") {
                     stats.zp_session = val.trim().to_owned();
-                } else if let Some(val) = s.strip_prefix("RTT=") {
-                    if let Some(num) = val.split_whitespace().next().and_then(|n| n.parse::<u32>().ok()) {
-                        stats.zp_rtt_ms = Some(num);
-                    }
+                } else if let Some(val) = s.strip_prefix("RTT=")
+                    && let Some(num) = val.split_whitespace().next().and_then(|n| n.parse::<u32>().ok())
+                {
+                    stats.zp_rtt_ms = Some(num);
                 }
             }
         }
@@ -325,10 +332,10 @@ fn parse_stream_line(stats: &mut NetSessionStats, line: &str) -> bool {
                 if let Ok(v) = val.trim().parse::<u64>() {
                     stats.packets_total = v;
                 }
-            } else if let Some(val) = s.strip_prefix("errs=") {
-                if let Ok(v) = val.trim().parse::<u64>() {
-                    stats.frames_dropped = v;
-                }
+            } else if let Some(val) = s.strip_prefix("errs=")
+                && let Ok(v) = val.trim().parse::<u64>()
+            {
+                stats.frames_dropped = v;
             }
         }
         return true;
@@ -353,10 +360,10 @@ fn parse_stream_line(stats: &mut NetSessionStats, line: &str) -> bool {
                 if let Ok(v) = val.trim().parse::<u64>() {
                     stats.fec_recovered = v;
                 }
-            } else if let Some(val) = s.strip_prefix("dropped=") {
-                if let Ok(v) = val.trim().parse::<u64>() {
-                    stats.frames_dropped = v;
-                }
+            } else if let Some(val) = s.strip_prefix("dropped=")
+                && let Ok(v) = val.trim().parse::<u64>()
+            {
+                stats.frames_dropped = v;
             }
         }
         return true;

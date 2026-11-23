@@ -1,27 +1,39 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rune::{El, ScrollSpec, col, el, row, spacer, text};
+use rune::{El, ScrollSpec, TextEdit, col, el, row, spacer, text};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Divider, Kit, SegmentedControl,
-    Spinner, Switch,
+    Spinner, Switch, TextInput,
 };
 
 use crate::runner::spawn_benchmark;
-use crate::state::{AppState, BenchResults, PipelineKind, RESOLUTIONS};
+use crate::state::{
+    AppState, BenchResults, PipelineKind, RESOLUTIONS, host_supports_rio,
+};
 use crate::views::{kpi_box, panel, stepper};
 
 pub fn view(s: &AppState, k: &Kit) -> El {
     let pipe_idx = match s.pipeline {
         PipelineKind::Nvenc => 0,
         PipelineKind::Pyrowave => 1,
-        PipelineKind::Ternary => 2,
+        PipelineKind::Zcvid => 2,
+    };
+
+    let pipe_supported = s.pipeline.is_supported_on_platform();
+    let pipe_present = s.pipeline.is_binary_present();
+    let (pipe_status_label, pipe_status_var) = if !pipe_supported {
+        ("Indisponible sur cet OS/arch", BadgeVariant::Neutral)
+    } else if pipe_present {
+        ("Disponible", BadgeVariant::Accent)
+    } else {
+        ("Binaire absent", BadgeVariant::Neutral)
     };
 
     let pipeline_bar = panel(
         k,
         "pipeline_panel",
-        "Pipeline GPU + zcrudp::nextgen",
+        "Pipeline Vidéo + zcrudp::nextgen",
         Some(s.pipeline.summary()),
         row()
             .w_full()
@@ -32,7 +44,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     &[
                         PipelineKind::Nvenc.label(),
                         PipelineKind::Pyrowave.label(),
-                        PipelineKind::Ternary.label(),
+                        PipelineKind::Zcvid.label(),
                     ],
                     Some(pipe_idx),
                 )
@@ -41,7 +53,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     s.pipeline = match idx {
                         0 => PipelineKind::Nvenc,
                         1 => PipelineKind::Pyrowave,
-                        _ => PipelineKind::Ternary,
+                        _ => PipelineKind::Zcvid,
                     };
                 })
                 .build(k)
@@ -49,11 +61,66 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             )
             .child(spacer())
             .child(
+                Badge::new(pipe_status_label)
+                    .variant(pipe_status_var)
+                    .build(k),
+            )
+            .child(
                 Badge::new(s.pipeline.exe_name())
                     .variant(BadgeVariant::Neutral)
                     .build(k),
             ),
     );
+
+    let res = RESOLUTIONS[s.res_idx];
+    let cur_fps = s.effective_bench_fps();
+    let is_auto_bw = s.is_bench_bitrate_auto();
+    let cur_mbps = s.effective_bench_bitrate_mbps();
+    let auto_mbps = AppState::auto_bitrate_mbps(res.width, res.height, cur_fps);
+    let min_cur_mbps = AppState::min_mbps_for_mode(res.width, res.height, cur_fps);
+    let cur_fps_under_bw = !is_auto_bw && cur_mbps < min_cur_mbps;
+
+    let mut hz_row = row()
+        .w_full()
+        .center_y()
+        .gap(4.0)
+        .child(text("Cadence (Hz)").font(k.ty.ui).color(k.c.text_base).grow(1.0));
+    for (hz, key) in [
+        (24_u32, "bench_hz_24"),
+        (60_u32, "bench_hz_60"),
+        (120_u32, "bench_hz_120"),
+        (240_u32, "bench_hz_240"),
+        (480_u32, "bench_hz_480"),
+    ] {
+        let enough_bw = is_auto_bw || cur_mbps >= AppState::min_mbps_for_mode(res.width, res.height, hz);
+        let selected = cur_fps == hz && enough_bw;
+        hz_row = hz_row.child(
+            Button::new(hz.to_string())
+                .variant(if selected {
+                    ButtonVariant::Submit
+                } else {
+                    ButtonVariant::Outline
+                })
+                .control_size(ControlSize::Small)
+                .disabled(!enough_bw)
+                .on_press(move |s: &mut AppState| {
+                    s.bench_fps = hz;
+                    s.bench_fps_edit = TextEdit::new(hz.to_string());
+                })
+                .build(k)
+                .key(key),
+        );
+    }
+    hz_row = hz_row
+        .child(
+            TextInput::new(&s.bench_fps_edit)
+                .placeholder("120")
+                .width(Some(58.0))
+                .on_edit(|s: &mut AppState| &mut s.bench_fps_edit)
+                .build(k)
+                .key("bench_fps_input"),
+        )
+        .child(text("Hz").font(k.ty.small).color(k.c.text_muted));
 
     let video_cfg = panel(
         k,
@@ -81,6 +148,78 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .key("res_seg"),
                     ),
             )
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .gap(6.0)
+                    .child(text("Bande passante").font(k.ty.ui).color(k.c.text_base).grow(1.0))
+                    .child(
+                        Button::new("Auto")
+                            .variant(if is_auto_bw {
+                                ButtonVariant::Submit
+                            } else {
+                                ButtonVariant::Outline
+                            })
+                            .control_size(ControlSize::Small)
+                            .on_press(|s: &mut AppState| {
+                                s.bench_bitrate_edit = TextEdit::new("");
+                            })
+                            .build(k)
+                            .key("bench_bitrate_auto"),
+                    )
+                    .child(
+                        SegmentedControl::new(
+                            &["15", "25", "50", "100", "200"],
+                            if is_auto_bw {
+                                None
+                            } else {
+                                match cur_mbps {
+                                    15 => Some(0),
+                                    25 => Some(1),
+                                    50 => Some(2),
+                                    100 => Some(3),
+                                    200 => Some(4),
+                                    _ => None,
+                                }
+                            },
+                        )
+                        .fit()
+                        .on_pick(|s: &mut AppState, idx, _| {
+                            let mbps = match idx {
+                                0 => 15,
+                                1 => 25,
+                                2 => 50,
+                                3 => 100,
+                                _ => 200,
+                            };
+                            s.bitrate_mbps = mbps;
+                            s.bench_bitrate_edit = TextEdit::new(mbps.to_string());
+                        })
+                        .build(k)
+                        .key("bench_bitrate_seg"),
+                    )
+                    .child(
+                        TextInput::new(&s.bench_bitrate_edit)
+                            .placeholder(format!("auto ({auto_mbps})"))
+                            .width(Some(72.0))
+                            .on_edit(|s: &mut AppState| &mut s.bench_bitrate_edit)
+                            .build(k)
+                            .key("bench_bitrate_input"),
+                    )
+                    .child(text("Mbps").font(k.ty.small).color(k.c.text_muted)),
+            )
+            .child(hz_row)
+            .child(if cur_fps_under_bw {
+                text(format!(
+                    "Débit insuffisant pour {}p @ {} Hz (min. {} Mbps) — cliquez Auto ou augmentez les Mbps.",
+                    res.height, cur_fps, min_cur_mbps
+                ))
+                .font(k.ty.small)
+                .color(k.c.text_accent)
+            } else {
+                el().size(0.0, 0.0)
+            })
             .child(stepper(
                 k,
                 "step_frames",
@@ -88,14 +227,6 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 format!("{}", s.frames),
                 |s| s.frames = s.frames.saturating_sub(60).max(60),
                 |s| s.frames = (s.frames + 60).min(2400),
-            ))
-            .child(stepper(
-                k,
-                "step_bitrate",
-                "Débit cible",
-                format!("{} Mbps", s.bitrate_mbps),
-                |s| s.bitrate_mbps = s.bitrate_mbps.saturating_sub(5).max(5),
-                |s| s.bitrate_mbps = (s.bitrate_mbps + 10).min(300),
             ))
             .child(stepper(
                 k,
@@ -110,14 +241,18 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 |s| s.fec_shards = (s.fec_shards + 1).min(4),
             ))
             .child(Divider::horizontal().build(k))
-            .child(
+            .child(if host_supports_rio() {
                 Switch::new(s.use_rio)
                     .label("Winsock RIO Batch TX")
-                    .description("I/O enregistrée pour réduire les syscalls UDP (Ternary / Pyrowave)")
+                    .description("I/O enregistrée pour réduire les syscalls UDP (Zcvid / Pyrowave)")
                     .on_toggle(|s: &mut AppState| s.use_rio = !s.use_rio)
                     .build(k)
-                    .key("sw_rio"),
-            )
+                    .key("sw_rio")
+            } else {
+                text("Transport UDP POSIX standard actif (Winsock RIO spécifique Windows).")
+                    .font(k.ty.small)
+                    .color(k.c.text_muted)
+            })
             .child(
                 Switch::new(s.live_window)
                     .label("Fenêtre vidéo live (--live)")
@@ -129,7 +264,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(
                 Switch::new(s.measure_psnr)
                     .label("Mesure Y-PSNR VRAM (--psnr)")
-                    .description("Vérifie la boucle fermée encodeur/décodeur (Ternary)")
+                    .description("Vérifie la boucle fermée encodeur/décodeur (Zcvid)")
                     .on_toggle(|s: &mut AppState| s.measure_psnr = !s.measure_psnr)
                     .build(k)
                     .key("sw_psnr"),
@@ -282,7 +417,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             Button::new("Lancer le benchmark")
                 .variant(ButtonVariant::Submit)
                 .control_size(ControlSize::Large)
+                .disabled(!pipe_supported)
                 .on_press(|s: &mut AppState| {
+                    if !s.pipeline.is_supported_on_platform() {
+                        return;
+                    }
                     s.bench_running = true;
                     s.bench_exit_code = None;
                     s.bench_logs.clear();
@@ -295,12 +434,16 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .build(k)
                 .key("btn_run_bench")
         })
-        .child(if s.bench_running {
+        .child(if !pipe_supported {
+            text("Pipeline NVENC réservé à Windows x64 — sélectionnez Zcvid Unified ou Pyrowave.")
+                .font(k.ty.small)
+                .color(k.c.text_accent)
+        } else if s.bench_running {
             row()
                 .gap(8.0)
                 .center_y()
                 .child(Spinner::new().size(16.0).color(k.c.bg_accent).build(k))
-                .child(text("Exécution GPU en cours...").font(k.ty.ui).color(k.c.text_muted))
+                .child(text("Exécution en cours...").font(k.ty.ui).color(k.c.text_muted))
         } else {
             el().size(0.0, 0.0)
         })

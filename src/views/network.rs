@@ -8,7 +8,10 @@ use rune_kit::{
 };
 
 use crate::net_udp::{ZpSyncLaunchOpts, probe_zpsync_network, start_network_session};
-use crate::state::{AppState, NetConnectMode, NetRole, RESOLUTIONS, StreamCodec};
+use crate::state::{
+    AppState, NetConnectMode, NetRole, RESOLUTIONS, StreamCodec, bin_name, host_platform_badge,
+    host_supports_rio,
+};
 use crate::views::{kpi_box, panel, stepper};
 
 pub fn view(s: &AppState, k: &Kit) -> El {
@@ -22,14 +25,81 @@ pub fn view(s: &AppState, k: &Kit) -> El {
     };
     let codec_idx = match s.net_codec {
         StreamCodec::Nvenc => 0,
-        StreamCodec::Ternary => 1,
+        StreamCodec::Pyrowave => 1,
+        StreamCodec::Zcvid => 2,
+    };
+
+    let (net_w, net_h) = s.effective_net_dims();
+    let net_cur_fps = s.effective_net_fps();
+    let net_is_auto_bw = s.is_net_bitrate_auto();
+    let net_cur_mbps = s.effective_net_bitrate_mbps();
+    let net_auto_mbps = AppState::auto_bitrate_mbps(net_w, net_h, net_cur_fps);
+    let net_min_cur_mbps = AppState::min_mbps_for_mode(net_w, net_h, net_cur_fps);
+    let net_bw_limited = s.net_role == NetRole::Sender && !net_is_auto_bw;
+    let net_fps_under_bw = net_bw_limited && net_cur_mbps < net_min_cur_mbps;
+
+    let mut net_hz_row = row()
+        .w_full()
+        .center_y()
+        .gap(6.0)
+        .child(
+            text("Cadence (Hz)")
+                .font(k.ty.ui)
+                .color(k.c.text_base)
+                .grow(1.0),
+        );
+    for (hz, key) in [
+        (24_u32, "net_hz_24"),
+        (60_u32, "net_hz_60"),
+        (120_u32, "net_hz_120"),
+        (240_u32, "net_hz_240"),
+        (480_u32, "net_hz_480"),
+    ] {
+        let enough_bw = !net_bw_limited || net_cur_mbps >= AppState::min_mbps_for_mode(net_w, net_h, hz);
+        let selected = net_cur_fps == hz && enough_bw;
+        net_hz_row = net_hz_row.child(
+            Button::new(format!("{hz} Hz"))
+                .variant(if selected {
+                    ButtonVariant::Submit
+                } else {
+                    ButtonVariant::Outline
+                })
+                .control_size(ControlSize::Small)
+                .disabled(s.net_stats.running || !enough_bw)
+                .on_press(move |s: &mut AppState| {
+                    if !s.net_stats.running {
+                        s.net_fps = hz;
+                        s.net_fps_edit = TextEdit::new(hz.to_string());
+                    }
+                })
+                .build(k)
+                .key(key),
+        );
+    }
+    net_hz_row = net_hz_row
+        .child(
+            TextInput::new(&s.net_fps_edit)
+                .placeholder("120")
+                .width(Some(64.0))
+                .on_edit(|s: &mut AppState| &mut s.net_fps_edit)
+                .build(k)
+                .key("net_fps_input"),
+        )
+        .child(text("Hz").font(k.ty.small).color(k.c.text_muted));
+
+    let net_codec_supported = s.net_codec.is_supported_on_platform();
+    let stream_exe = bin_name("zcrudp_stream");
+    let capture_subtitle = if cfg!(target_os = "windows") {
+        "Capture DXGI Desktop Duplication + encodage GPU + transport zcrudp (2 PC ou loopback)"
+    } else {
+        "Capture synthétique portable C11 + encodage Zcvid / Wavelets + transport UDP zcrudp"
     };
 
     let config_panel = panel(
         k,
         "net_cfg_panel",
-        "Streaming Écran Temps Réel (zcrudp_stream.exe)",
-        Some("Capture DXGI Desktop Duplication + encodage GPU + transport zcrudp (2 PC ou loopback)"),
+        &format!("Streaming Temps Réel ({stream_exe})"),
+        Some(capture_subtitle),
         col()
             .w_full()
             .gap(12.0)
@@ -73,21 +143,32 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     .w_full()
                     .center_y()
                     .gap(12.0)
-                    .child(text("Codec GPU").font(k.ty.ui).color(k.c.text_base).w(110.0))
+                    .child(text("Codec").font(k.ty.ui).color(k.c.text_base).w(110.0))
                     .child(
-                        SegmentedControl::new(&["NVENC (H.264)", "Ternary HLSL"], Some(codec_idx))
-                            .fit()
-                            .on_pick(|s: &mut AppState, idx, _| {
-                                if !s.net_stats.running {
-                                    s.net_codec = if idx == 0 {
-                                        StreamCodec::Nvenc
-                                    } else {
-                                        StreamCodec::Ternary
-                                    };
-                                }
-                            })
-                            .build(k)
-                            .key("net_codec_seg"),
+                        SegmentedControl::new(
+                            &[
+                                "NVENC (H.264)",
+                                "Pyrowave (Wavelets)",
+                                if cfg!(target_os = "windows") {
+                                    "Zcvid Unified"
+                                } else {
+                                    "Zcvid Portable"
+                                },
+                            ],
+                            Some(codec_idx),
+                        )
+                        .fit()
+                        .on_pick(|s: &mut AppState, idx, _| {
+                            if !s.net_stats.running {
+                                s.net_codec = match idx {
+                                    0 => StreamCodec::Nvenc,
+                                    1 => StreamCodec::Pyrowave,
+                                    _ => StreamCodec::Zcvid,
+                                };
+                            }
+                        })
+                        .build(k)
+                        .key("net_codec_seg"),
                     )
                     .child(text("Résolution").font(k.ty.ui).color(k.c.text_base).ml(16.0))
                     .child(
@@ -287,22 +368,88 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(if s.net_role == NetRole::Sender {
                 col()
                     .gap(8.0)
-                    .child(stepper(
-                        k,
-                        "net_fps",
-                        "Cadence cible",
-                        format!("{} fps", s.net_fps),
-                        |s| s.net_fps = s.net_fps.saturating_sub(15).max(15),
-                        |s| s.net_fps = (s.net_fps + 15).min(240),
-                    ))
-                    .child(stepper(
-                        k,
-                        "net_mbps",
-                        "Débit cible",
-                        format!("{} Mbps", s.net_bitrate_mbps),
-                        |s| s.net_bitrate_mbps = s.net_bitrate_mbps.saturating_sub(5).max(5),
-                        |s| s.net_bitrate_mbps = (s.net_bitrate_mbps + 10).min(400),
-                    ))
+                    .child(
+                        row()
+                            .w_full()
+                            .center_y()
+                            .gap(6.0)
+                            .child(
+                                text("Bande passante")
+                                    .font(k.ty.ui)
+                                    .color(k.c.text_base)
+                                    .grow(1.0),
+                            )
+                            .child(
+                                Button::new("Auto")
+                                    .variant(if net_is_auto_bw {
+                                        ButtonVariant::Submit
+                                    } else {
+                                        ButtonVariant::Outline
+                                    })
+                                    .control_size(ControlSize::Small)
+                                    .disabled(s.net_stats.running)
+                                    .on_press(|s: &mut AppState| {
+                                        if !s.net_stats.running {
+                                            s.net_bitrate_edit = TextEdit::new("");
+                                        }
+                                    })
+                                    .build(k)
+                                    .key("net_bitrate_auto"),
+                            )
+                            .child(
+                                SegmentedControl::new(
+                                    &["15", "25", "50", "100", "200"],
+                                    if net_is_auto_bw {
+                                        None
+                                    } else {
+                                        match net_cur_mbps {
+                                            15 => Some(0),
+                                            25 => Some(1),
+                                            50 => Some(2),
+                                            100 => Some(3),
+                                            200 => Some(4),
+                                            _ => None,
+                                        }
+                                    },
+                                )
+                                .fit()
+                                .on_pick(|s: &mut AppState, idx, _| {
+                                    if !s.net_stats.running {
+                                        let mbps = match idx {
+                                            0 => 15,
+                                            1 => 25,
+                                            2 => 50,
+                                            3 => 100,
+                                            _ => 200,
+                                        };
+                                        s.net_bitrate_mbps = mbps;
+                                        s.net_bitrate_edit = TextEdit::new(mbps.to_string());
+                                    }
+                                })
+                                .build(k)
+                                .key("net_bitrate_seg"),
+                            )
+                            .child(
+                                TextInput::new(&s.net_bitrate_edit)
+                                    .placeholder(format!("auto ({net_auto_mbps})"))
+                                    .width(Some(76.0))
+                                    .on_edit(|s: &mut AppState| &mut s.net_bitrate_edit)
+                                    .build(k)
+                                    .key("net_bitrate_input"),
+                            )
+                            .child(text("Mbps").font(k.ty.small).color(k.c.text_muted)),
+                    )
+                    .child(net_hz_row)
+                    .child(if net_fps_under_bw {
+                        text(format!(
+                            "Débit insuffisant pour {}×{} @ {} Hz (min. {} Mbps) — cliquez Auto ou augmentez les Mbps.",
+                            net_w, net_h, net_cur_fps, net_min_cur_mbps
+                        ))
+                        .font(k.ty.small)
+                        .color(k.c.text_accent)
+                    } else {
+                        rune::el().size(0.0, 0.0)
+                    })
                     .child(stepper(
                         k,
                         "net_fec",
@@ -315,18 +462,31 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         |s| s.net_fec_shards = s.net_fec_shards.saturating_sub(1),
                         |s| s.net_fec_shards = (s.net_fec_shards + 1).min(4),
                     ))
-                    .child(
+                    .child(if host_supports_rio() {
                         Switch::new(s.net_use_rio)
                             .label("Winsock RIO (Registered I/O)")
                             .description("Envoi UDP zéro-syscall sur l'émetteur")
                             .on_toggle(|s: &mut AppState| s.net_use_rio = !s.net_use_rio)
                             .build(k)
-                            .key("net_sw_rio"),
-                    )
+                            .key("net_sw_rio")
+                    } else {
+                        text("Transport UDP POSIX actif (Winsock RIO spécifique Windows).")
+                            .font(k.ty.small)
+                            .color(k.c.text_muted)
+                    })
             } else {
-                text("Le récepteur ouvre une fenêtre FLIP_DISCARD temps réel dès réception des frames.")
-                    .font(k.ty.small)
-                    .color(k.c.text_muted)
+                col()
+                    .gap(8.0)
+                    .child(net_hz_row)
+                    .child(
+                        text(if cfg!(target_os = "windows") {
+                            "Le récepteur ouvre une fenêtre FLIP_DISCARD temps réel dès réception des frames."
+                        } else {
+                            "Le récepteur décode en temps réel les frames reçues en boucle fermée bit-exacte."
+                        })
+                            .font(k.ty.small)
+                            .color(k.c.text_muted),
+                    )
             })
             .child(
                 row()
@@ -353,7 +513,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         })
                         .variant(ButtonVariant::Submit)
                         .control_size(ControlSize::Large)
+                        .disabled(!net_codec_supported)
                         .on_press(|s: &mut AppState| {
+                            if !s.net_codec.is_supported_on_platform() {
+                                return;
+                            }
                             let port: u16 = s.net_port_edit.text.trim().parse().unwrap_or(9900);
                             let width: u32 = s.net_width_edit.text.trim().parse().unwrap_or(1920);
                             let height: u32 = s.net_height_edit.text.trim().parse().unwrap_or(1080);
@@ -377,7 +541,23 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                             s.net_stats.zp_session.clear();
                             s.net_stats.zp_rtt_ms = None;
                             s.net_logs.clear();
-                            s.net_stats.status_msg = "Lancement de zcrudp_stream.exe...".into();
+                            s.net_stats.status_msg = format!(
+                                "Lancement de {} ({})...",
+                                bin_name("zcrudp_stream"),
+                                host_platform_badge()
+                            );
+                            let fps = s.effective_net_fps();
+                            let bitrate_mbps = if s.is_net_bitrate_auto() {
+                                if matches!(s.net_codec, StreamCodec::Zcvid | StreamCodec::Pyrowave) {
+                                    0 // let zcrudp_stream compute the exact auto bitrate
+                                } else {
+                                    AppState::auto_bitrate_mbps(width, height, fps)
+                                }
+                            } else {
+                                s.effective_net_bitrate_mbps()
+                            };
+                            s.net_fps = fps;
+                            s.net_bitrate_mbps = bitrate_mbps;
                             start_network_session(
                                 s.net_role,
                                 s.net_connect_mode,
@@ -387,8 +567,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                                 host,
                                 port,
                                 zp_opts,
-                                s.net_fps,
-                                s.net_bitrate_mbps,
+                                fps,
+                                bitrate_mbps,
                                 s.net_fec_shards,
                                 s.net_use_rio,
                                 s.tx.clone(),
@@ -404,11 +584,15 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     } else {
                         rune::el().size(0.0, 0.0)
                     })
-                    .child(
+                    .child(if !net_codec_supported {
+                        text("NVENC (H.264) requiert Windows x64 — sélectionnez Zcvid ou Pyrowave.")
+                            .font(k.ty.ui)
+                            .color(k.c.text_accent)
+                    } else {
                         text(s.net_stats.status_msg.clone())
                             .font(k.ty.ui)
-                            .color(k.c.text_muted),
-                    ),
+                            .color(k.c.text_muted)
+                    }),
             ),
     );
 
@@ -483,7 +667,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
     let mut log_col = col().w_full().gap(2.0);
     if s.net_logs.is_empty() {
         log_col = log_col.child(
-            text("Les logs de zcrudp_stream.exe s'afficheront ici.")
+            text(format!("Les logs de {} s'afficheront ici.", bin_name("zcrudp_stream")))
                 .font(k.ty.mono)
                 .color(k.c.text_muted),
         );

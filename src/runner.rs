@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use rune::Waker;
 
 use crate::state::{
-    AppEvent, BenchResults, PipelineKind, ZCSTREAM_BUILD_DIR, StatRow, ZCVID_DIR,
-    TestTargetId, ZCRUDP_DIR, ZPSYNC_DIR,
+    AppEvent, BenchResults, PipelineKind, StatRow, TestTargetId, find_binary, zcrudp_dir,
+    zcstream_dir, zcvid_dir, zpsync_dir,
 };
 
 fn wake(waker: &Option<Waker>) {
@@ -28,17 +28,20 @@ pub fn spawn_benchmark(
     stop: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        let exe_path = Path::new(ZCSTREAM_BUILD_DIR).join(pipeline.exe_name());
-        if !exe_path.exists() {
+        let Some(exe_path) = find_binary(pipeline.base_exe_name()) else {
             let _ = tx.send(AppEvent::BenchLog(format!(
-                "Erreur: exécutable introuvable : {}",
-                exe_path.display()
+                "Erreur: exécutable `{}` introuvable. Lancez ./install.ps1 (Windows) ou ./install.sh (Linux/macOS), ou définissez ZCSTREAM_BIN_DIR.",
+                pipeline.exe_name()
             )));
             wake(&waker);
             let _ = tx.send(AppEvent::BenchDone { exit_code: -1 });
             wake(&waker);
             return;
-        }
+        };
+        let work_dir = exe_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
 
         let _ = tx.send(AppEvent::BenchLog(format!(
             "$ {} {}",
@@ -49,7 +52,7 @@ pub fn spawn_benchmark(
 
         let mut cmd = Command::new(&exe_path);
         cmd.args(&args)
-            .current_dir(ZCSTREAM_BUILD_DIR)
+            .current_dir(&work_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -194,16 +197,16 @@ pub fn parse_bench_line(res: &mut BenchResults, line: &str) {
             res.kb_per_frame = Some(kb);
         }
     } else if let Some(rest) = trimmed.strip_prefix("Y-PSNR (VRAM)") {
-        if let Some((_, val_part)) = rest.split_once("avg:") {
-            if let Some(num) = val_part.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
-                res.y_psnr_db = Some(num);
-            }
+        if let Some((_, val_part)) = rest.split_once("avg:")
+            && let Some(num) = val_part.split_whitespace().next().and_then(|v| v.parse::<f64>().ok())
+        {
+            res.y_psnr_db = Some(num);
         }
     } else if let Some(rest) = trimmed.strip_prefix("Enc/Dec reference") {
-        if let Some((_, val_part)) = rest.split_once('|') {
-            if let Some(num) = val_part.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
-                res.ref_mismatch_px = Some(num);
-            }
+        if let Some((_, val_part)) = rest.split_once('|')
+            && let Some(num) = val_part.split_whitespace().next().and_then(|v| v.parse::<u64>().ok())
+        {
+            res.ref_mismatch_px = Some(num);
         }
     } else if trimmed.contains("min:") && trimmed.contains("p50:") && trimmed.contains("p99:") {
         // Stat row: "1. Capture+NV12    | min:  123.4 us | p50:  200.1 us | p95: ... | p99: ... | avg: ..."
@@ -226,15 +229,24 @@ pub fn parse_bench_line(res: &mut BenchResults, line: &str) {
     }
 }
 
+fn tool_in_path(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
 fn ensure_cmake_built(
     id: TestTargetId,
-    dir: &str,
+    dir: &Path,
     label: &str,
     tx: &Sender<AppEvent>,
     waker: &Option<Waker>,
 ) {
-    let build_dir = Path::new(dir).join("build");
-    if build_dir.exists() {
+    let build_dir = dir.join("build");
+    if build_dir.join("CTestTestfile.cmake").is_file() {
         return;
     }
     let _ = tx.send(AppEvent::TestLog {
@@ -242,10 +254,25 @@ fn ensure_cmake_built(
         line: format!("Info: {label} n'existe pas encore. Configuration CMake..."),
     });
     wake(waker);
-    let cfg = Command::new("cmake")
-        .args(["-S", ".", "-B", "build", "-G", "MinGW Makefiles", "-DCMAKE_C_COMPILER=clang"])
-        .current_dir(dir)
-        .output();
+    let mut cfg_cmd = Command::new("cmake");
+    if cfg!(windows) {
+        if tool_in_path("clang") && tool_in_path("mingw32-make") {
+            cfg_cmd.args([
+                "-S", ".", "-B", "build", "-G", "MinGW Makefiles",
+                "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
+            ]);
+        } else if tool_in_path("gcc") && tool_in_path("mingw32-make") {
+            cfg_cmd.args([
+                "-S", ".", "-B", "build", "-G", "MinGW Makefiles",
+                "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
+            ]);
+        } else {
+            cfg_cmd.args(["-S", ".", "-B", "build"]);
+        }
+    } else {
+        cfg_cmd.args(["-S", ".", "-B", "build"]);
+    }
+    let cfg = cfg_cmd.current_dir(dir).output();
     if let Ok(out) = cfg {
         let _ = tx.send(AppEvent::TestLog {
             id,
@@ -258,47 +285,99 @@ fn ensure_cmake_built(
             });
         }
     }
+    let jobs = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .to_string();
     let bld = Command::new("cmake")
-        .args(["--build", "build", "-j", "8"])
+        .args(["--build", "build", "--config", "Release", "-j", &jobs])
         .current_dir(dir)
         .output();
-    if let Ok(out) = bld {
-        if !out.status.success() {
-            let _ = tx.send(AppEvent::TestLog {
-                id,
-                line: String::from_utf8_lossy(&out.stderr).to_string(),
-            });
-        }
+    if let Ok(out) = bld
+        && !out.status.success()
+    {
+        let _ = tx.send(AppEvent::TestLog {
+            id,
+            line: String::from_utf8_lossy(&out.stderr).to_string(),
+        });
     }
+}
+
+fn ctest_args_for(dir: &Path) -> Vec<String> {
+    let mut args = vec![
+        "--test-dir".into(),
+        "build".into(),
+        "--output-on-failure".into(),
+    ];
+    if dir.join("build").join("Release").is_dir() {
+        args.push("-C".into());
+        args.push("Release".into());
+    }
+    args
 }
 
 pub fn spawn_test(id: TestTargetId, tx: Sender<AppEvent>, waker: Option<Waker>) {
     thread::spawn(move || {
         let start = Instant::now();
-        let (program, args, cwd): (&str, Vec<&str>, &str) = match id {
-            TestTargetId::StreamingBridge => (
-                "ctest",
-                vec!["--test-dir", ZCSTREAM_BUILD_DIR, "--output-on-failure"],
-                ZCSTREAM_BUILD_DIR,
-            ),
-            TestTargetId::TernaryCodec => (
-                "mingw32-make",
-                vec!["CC=clang", "test"],
-                ZCVID_DIR,
-            ),
+        let (program, args, cwd): (&str, Vec<String>, PathBuf) = match id {
+            TestTargetId::StreamingBridge => {
+                let dir = zcstream_dir();
+                ensure_cmake_built(id, &dir, "zcstream/build", &tx, &waker);
+                let args = ctest_args_for(&dir);
+                ("ctest", args, dir)
+            }
+            TestTargetId::ZcvidCodec => {
+                let dir = zcvid_dir();
+                if cfg!(windows) && tool_in_path("mingw32-make") && (tool_in_path("clang") || tool_in_path("gcc")) {
+                    let cc = if tool_in_path("clang") {
+                        "CC=clang"
+                    } else {
+                        "CC=gcc"
+                    };
+                    ("mingw32-make", vec![cc.into(), "test".into()], dir)
+                } else if !cfg!(windows) && tool_in_path("make") {
+                    ("make", vec!["test".into()], dir)
+                } else {
+                    ensure_cmake_built(id, &dir, "zcvid/build", &tx, &waker);
+                    let args = ctest_args_for(&dir);
+                    ("ctest", args, dir)
+                }
+            }
             TestTargetId::ZcrudpCore => {
-                ensure_cmake_built(id, ZCRUDP_DIR, "zcrudp/build", &tx, &waker);
-                ("ctest", vec!["--test-dir", "build", "--output-on-failure"], ZCRUDP_DIR)
+                let dir = zcrudp_dir();
+                ensure_cmake_built(id, &dir, "zcrudp/build", &tx, &waker);
+                let args = ctest_args_for(&dir);
+                ("ctest", args, dir)
             }
             TestTargetId::Zpsync => {
-                ensure_cmake_built(id, ZPSYNC_DIR, "zpsync/build", &tx, &waker);
-                ("ctest", vec!["--test-dir", "build", "--output-on-failure"], ZPSYNC_DIR)
+                let dir = zpsync_dir();
+                ensure_cmake_built(id, &dir, "zpsync/build", &tx, &waker);
+                let args = ctest_args_for(&dir);
+                ("ctest", args, dir)
             }
         };
 
+        if !cwd.is_dir() {
+            let _ = tx.send(AppEvent::TestLog {
+                id,
+                line: format!(
+                    "Dépôt source introuvable ({}). Lancez ./install.ps1 ou ./install.sh pour installer l'espace de travail complet.",
+                    cwd.display()
+                ),
+            });
+            wake(&waker);
+            let _ = tx.send(AppEvent::TestDone {
+                id,
+                passed: false,
+                duration_ms: start.elapsed().as_millis() as u64,
+            });
+            wake(&waker);
+            return;
+        }
+
         let mut cmd = Command::new(program);
         cmd.args(&args)
-            .current_dir(cwd)
+            .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
