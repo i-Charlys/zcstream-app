@@ -1,6 +1,6 @@
 pub mod network;
 
-use rune::{Color, El, ScrollSpec, TextStyle, col, el, row, spacer, text};
+use rune::{Color, El, ScrollSpec, TextStyle, col, el, row, text};
 use rune_kit::{Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Divider, Kit};
 
 use crate::state::{AppState, host_platform_badge};
@@ -9,14 +9,18 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
     let header = row()
         .key("header")
         .w_full()
-        .h(52.0)
-        .px(20.0)
+        .min_h(52.0)
+        .px(16.0)
+        .py(10.0)
         .center_y()
-        .gap(16.0)
+        .justify_between()
+        .flex_wrap()
+        .gap(10.0)
         .fill(k.c.layer_01)
         .child(
             row()
-                .gap(10.0)
+                .flex_wrap()
+                .gap(8.0)
                 .center_y()
                 .child(
                     el().size(10.0, 10.0)
@@ -39,7 +43,6 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
                         .build(k),
                 ),
         )
-        .child(spacer())
         .child(
             Button::new(if s.dark { "Clair" } else { "Sombre" })
                 .variant(ButtonVariant::Ghost)
@@ -64,32 +67,41 @@ pub fn app_view(s: &AppState, k: &Kit) -> El {
                 .grow(1.0)
                 .shrink()
                 .min_h(0.0)
+                .min_w(0.0)
                 .w_full()
                 .child(
-                    body.w_full()
-                        .padding(20.0)
+                    col()
+                        .w_full()
+                        .max_w(1180.0)
+                        .self_center()
+                        .padding(16.0)
+                        .child(body)
                         .scroll(ScrollSpec { stick_bottom: false }),
                 ),
         )
 }
 
 pub fn panel(k: &Kit, key: &'static str, title: &str, subtitle: Option<&str>, content: El) -> El {
-    let mut header = col().gap(2.0).child(
+    let mut header = col().w_full().min_w(0.0).gap(2.0).child(
         text(title.to_owned())
             .font(k.ty.body_medium)
-            .color(k.c.text_strong),
+            .color(k.c.text_strong)
+            .wrap(),
     );
     if let Some(sub) = subtitle {
         header = header.child(
             text(sub.to_owned())
                 .font(k.ty.small)
-                .color(k.c.text_muted),
+                .color(k.c.text_muted)
+                .wrap(),
         );
     }
 
     col()
         .key(key)
         .w_full()
+        .min_w(0.0)
+        .shrink()
         .padding(16.0)
         .gap(12.0)
         .radius(k.radius.lg)
@@ -105,6 +117,8 @@ pub fn kpi_box(k: &Kit, key: &'static str, label: &str, value: String, accent: O
     col()
         .key(key)
         .grow(1.0)
+        .shrink()
+        .min_w(150.0)
         .padding(12.0)
         .gap(4.0)
         .radius(k.radius.md)
@@ -113,7 +127,8 @@ pub fn kpi_box(k: &Kit, key: &'static str, label: &str, value: String, accent: O
         .child(
             text(label.to_owned())
                 .font(k.ty.small)
-                .color(k.c.text_muted),
+                .color(k.c.text_muted)
+                .wrap(),
         )
         .child(
             text(value)
@@ -122,7 +137,8 @@ pub fn kpi_box(k: &Kit, key: &'static str, label: &str, value: String, accent: O
                     line_height: 22.0,
                     ..k.ty.body_medium
                 })
-                .color(val_color),
+                .color(val_color)
+                .wrap(),
         )
 }
 
@@ -137,33 +153,42 @@ pub fn stepper(
     row()
         .key(key)
         .w_full()
+        .flex_wrap()
         .center_y()
+        .justify_between()
         .gap(8.0)
         .child(
             text(label.to_owned())
                 .font(k.ty.ui)
                 .color(k.c.text_base)
-                .grow(1.0),
+                .wrap()
+                .min_w(140.0)
+                .shrink(),
         )
         .child(
-            Button::new("−")
-                .variant(ButtonVariant::Outline)
-                .control_size(ControlSize::Small)
-                .on_press(on_dec)
-                .build(k)
-                .key("dec"),
-        )
-        .child(
-            el().min_w(64.0)
-                .center()
-                .child(text(value_str).font(k.ty.mono).color(k.c.text_strong)),
-        )
-        .child(
-            Button::new("+")
-                .variant(ButtonVariant::Outline)
-                .control_size(ControlSize::Small)
-                .on_press(on_inc)
-                .build(k)
-                .key("inc"),
+            row()
+                .center_y()
+                .gap(8.0)
+                .child(
+                    Button::new("−")
+                        .variant(ButtonVariant::Outline)
+                        .control_size(ControlSize::Small)
+                        .on_press(on_dec)
+                        .build(k)
+                        .key("dec"),
+                )
+                .child(
+                    el().min_w(64.0)
+                        .center()
+                        .child(text(value_str).font(k.ty.mono).color(k.c.text_strong)),
+                )
+                .child(
+                    Button::new("+")
+                        .variant(ButtonVariant::Outline)
+                        .control_size(ControlSize::Small)
+                        .on_press(on_inc)
+                        .build(k)
+                        .key("inc"),
+                ),
         )
 }

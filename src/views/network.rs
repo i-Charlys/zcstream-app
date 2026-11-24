@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rune::{El, ScrollSpec, TextEdit, col, row, spacer, text};
+use rune::{El, ScrollSpec, TextEdit, col, row, text};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Divider, Kit, SegmentedControl,
     Spinner, Switch, TextInput,
@@ -40,13 +40,14 @@ pub fn view(s: &AppState, k: &Kit) -> El {
 
     let mut net_hz_row = row()
         .w_full()
+        .flex_wrap()
         .center_y()
-        .gap(6.0)
+        .gap(8.0)
         .child(
             text("Cadence (Hz)")
                 .font(k.ty.ui)
                 .color(k.c.text_base)
-                .grow(1.0),
+                .min_w(108.0),
         );
     for (hz, key) in [
         (24_u32, "net_hz_24"),
@@ -76,23 +77,27 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .key(key),
         );
     }
-    net_hz_row = net_hz_row
-        .child(
-            TextInput::new(&s.net_fps_edit)
-                .placeholder("120")
-                .width(Some(64.0))
-                .on_edit(|s: &mut AppState| &mut s.net_fps_edit)
-                .build(k)
-                .key("net_fps_input"),
-        )
-        .child(text("Hz").font(k.ty.small).color(k.c.text_muted));
+    net_hz_row = net_hz_row.child(
+        row()
+            .center_y()
+            .gap(6.0)
+            .child(
+                TextInput::new(&s.net_fps_edit)
+                    .placeholder("120")
+                    .width(Some(64.0))
+                    .on_edit(|s: &mut AppState| &mut s.net_fps_edit)
+                    .build(k)
+                    .key("net_fps_input"),
+            )
+            .child(text("Hz").font(k.ty.small).color(k.c.text_muted)),
+    );
 
     let net_codec_supported = s.net_codec.is_supported_on_platform();
     let stream_exe = bin_name("zcrudp_stream");
     let capture_subtitle = if cfg!(target_os = "windows") {
         "Capture DXGI Desktop Duplication + encodage GPU + transport zcrudp (2 PC ou loopback)"
     } else {
-        "Capture synthétique portable C11 + encodage Zcvid / Wavelets + transport UDP zcrudp"
+        "Capture X11 desktop (fallback mire sous Wayland/headless) + encodage Zcvid Portable + transport UDP zcrudp"
     };
 
     let config_panel = panel(
@@ -102,32 +107,40 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         Some(capture_subtitle),
         col()
             .w_full()
+            .min_w(0.0)
             .gap(12.0)
             .child(
                 row()
                     .w_full()
+                    .flex_wrap()
+                    .justify_between()
                     .center_y()
-                    .gap(12.0)
-                    .child(text("Rôle").font(k.ty.ui).color(k.c.text_base).w(110.0))
+                    .gap(10.0)
                     .child(
-                        SegmentedControl::new(
-                            &["Émetteur (Capture écran)", "Récepteur (Fenêtre live)"],
-                            Some(role_idx),
-                        )
-                        .fit()
-                        .on_pick(|s: &mut AppState, idx, _| {
-                            if !s.net_stats.running {
-                                s.net_role = if idx == 0 {
-                                    NetRole::Sender
-                                } else {
-                                    NetRole::Receiver
-                                };
-                            }
-                        })
-                        .build(k)
-                        .key("net_role_seg"),
+                        row()
+                            .flex_wrap()
+                            .center_y()
+                            .gap(10.0)
+                            .child(text("Rôle").font(k.ty.ui).color(k.c.text_base).min_w(96.0))
+                            .child(
+                                SegmentedControl::new(
+                                    &["Émetteur (Capture écran)", "Récepteur (Fenêtre live)"],
+                                    Some(role_idx),
+                                )
+                                .fit()
+                                .on_pick(|s: &mut AppState, idx, _| {
+                                    if !s.net_stats.running {
+                                        s.net_role = if idx == 0 {
+                                            NetRole::Sender
+                                        } else {
+                                            NetRole::Receiver
+                                        };
+                                    }
+                                })
+                                .build(k)
+                                .key("net_role_seg"),
+                            ),
                     )
-                    .child(spacer())
                     .child(
                         Badge::new(if s.net_stats.running { "Actif" } else { "Inactif" })
                             .variant(if s.net_stats.running {
@@ -141,9 +154,10 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(
                 row()
                     .w_full()
+                    .flex_wrap()
                     .center_y()
-                    .gap(12.0)
-                    .child(text("Codec").font(k.ty.ui).color(k.c.text_base).w(110.0))
+                    .gap(10.0)
+                    .child(text("Codec").font(k.ty.ui).color(k.c.text_base).min_w(96.0))
                     .child(
                         SegmentedControl::new(
                             &[
@@ -169,8 +183,15 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         })
                         .build(k)
                         .key("net_codec_seg"),
-                    )
-                    .child(text("Résolution").font(k.ty.ui).color(k.c.text_base).ml(16.0))
+                    ),
+            )
+            .child(
+                row()
+                    .w_full()
+                    .flex_wrap()
+                    .center_y()
+                    .gap(10.0)
+                    .child(text("Résolution").font(k.ty.ui).color(k.c.text_base).min_w(96.0))
                     .child(
                         SegmentedControl::new(
                             &["720p", "1080p", "1440p", "4K"],
@@ -189,54 +210,67 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .key("net_res_seg"),
                     )
                     .child(
-                        TextInput::new(&s.net_width_edit)
-                            .placeholder("1920")
-                            .width(Some(72.0))
-                            .on_edit(|s: &mut AppState| &mut s.net_width_edit)
-                            .build(k)
-                            .key("net_w_input"),
-                    )
-                    .child(text("×").font(k.ty.ui).color(k.c.text_muted))
-                    .child(
-                        TextInput::new(&s.net_height_edit)
-                            .placeholder("1080")
-                            .width(Some(72.0))
-                            .on_edit(|s: &mut AppState| &mut s.net_height_edit)
-                            .build(k)
-                            .key("net_h_input"),
+                        row()
+                            .center_y()
+                            .gap(6.0)
+                            .child(
+                                TextInput::new(&s.net_width_edit)
+                                    .placeholder("1920")
+                                    .width(Some(72.0))
+                                    .on_edit(|s: &mut AppState| &mut s.net_width_edit)
+                                    .build(k)
+                                    .key("net_w_input"),
+                            )
+                            .child(text("×").font(k.ty.ui).color(k.c.text_muted))
+                            .child(
+                                TextInput::new(&s.net_height_edit)
+                                    .placeholder("1080")
+                                    .width(Some(72.0))
+                                    .on_edit(|s: &mut AppState| &mut s.net_height_edit)
+                                    .build(k)
+                                    .key("net_h_input"),
+                            ),
                     ),
             )
             .child(
                 row()
                     .w_full()
+                    .flex_wrap()
+                    .justify_between()
                     .center_y()
-                    .gap(12.0)
-                    .child(text("Transport").font(k.ty.ui).color(k.c.text_base).w(110.0))
+                    .gap(10.0)
                     .child(
-                        SegmentedControl::new(
-                            &["Direct UDP (LAN / IP)", "ZPSync P2P (NAT Traversal)"],
-                            Some(mode_idx),
-                        )
-                        .fit()
-                        .on_pick(|s: &mut AppState, idx, _| {
-                            if !s.net_stats.running {
-                                s.net_connect_mode = if idx == 0 {
-                                    NetConnectMode::DirectUdp
-                                } else {
-                                    NetConnectMode::ZpSync
-                                };
-                            }
-                        })
-                        .build(k)
-                        .key("net_mode_seg"),
+                        row()
+                            .flex_wrap()
+                            .center_y()
+                            .gap(10.0)
+                            .child(text("Transport").font(k.ty.ui).color(k.c.text_base).min_w(96.0))
+                            .child(
+                                SegmentedControl::new(
+                                    &["Direct UDP (LAN / IP)", "ZPSync P2P (NAT Traversal)"],
+                                    Some(mode_idx),
+                                )
+                                .fit()
+                                .on_pick(|s: &mut AppState, idx, _| {
+                                    if !s.net_stats.running {
+                                        s.net_connect_mode = if idx == 0 {
+                                            NetConnectMode::DirectUdp
+                                        } else {
+                                            NetConnectMode::ZpSync
+                                        };
+                                    }
+                                })
+                                .build(k)
+                                .key("net_mode_seg"),
+                            ),
                     )
-                    .child(spacer())
                     .child(if s.net_connect_mode == NetConnectMode::ZpSync {
                         row()
+                            .flex_wrap()
                             .center_y()
                             .gap(8.0)
                             .child(if let Some(ref info) = s.zp_probe_info {
-                                text(info.clone()).font(k.ty.small).color(k.c.text_muted)
+                                text(info.clone()).font(k.ty.small).color(k.c.text_muted).wrap()
                             } else {
                                 rune::el().size(0.0, 0.0)
                             })
@@ -264,8 +298,9 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(if s.net_connect_mode == NetConnectMode::DirectUdp {
                 row()
                     .w_full()
+                    .flex_wrap()
                     .center_y()
-                    .gap(12.0)
+                    .gap(10.0)
                     .child(
                         text(if s.net_role == NetRole::Sender {
                             "IP Cible"
@@ -274,12 +309,12 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         })
                         .font(k.ty.ui)
                         .color(k.c.text_base)
-                        .w(110.0),
+                        .min_w(96.0),
                     )
                     .child(if s.net_role == NetRole::Sender {
                         TextInput::new(&s.net_host_edit)
                             .placeholder("192.168.1.50")
-                            .width(Some(220.0))
+                            .width(Some(200.0))
                             .on_edit(|s: &mut AppState| &mut s.net_host_edit)
                             .build(k)
                             .key("net_host_input")
@@ -287,15 +322,21 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         text("0.0.0.0 (toutes interfaces)")
                             .font(k.ty.mono)
                             .color(k.c.text_muted)
+                            .wrap()
                     })
-                    .child(text("Port UDP").font(k.ty.ui).color(k.c.text_base).ml(16.0))
                     .child(
-                        TextInput::new(&s.net_port_edit)
-                            .placeholder("9900")
-                            .width(Some(100.0))
-                            .on_edit(|s: &mut AppState| &mut s.net_port_edit)
-                            .build(k)
-                            .key("net_port_input"),
+                        row()
+                            .center_y()
+                            .gap(8.0)
+                            .child(text("Port UDP").font(k.ty.ui).color(k.c.text_base))
+                            .child(
+                                TextInput::new(&s.net_port_edit)
+                                    .placeholder("9900")
+                                    .width(Some(96.0))
+                                    .on_edit(|s: &mut AppState| &mut s.net_port_edit)
+                                    .build(k)
+                                    .key("net_port_input"),
+                            ),
                     )
             } else {
                 col()
@@ -304,50 +345,72 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     .child(
                         row()
                             .w_full()
+                            .flex_wrap()
                             .center_y()
-                            .gap(12.0)
-                            .child(text("Secret (S)").font(k.ty.ui).color(k.c.text_base).w(110.0))
+                            .gap(10.0)
                             .child(
-                                TextInput::new(&s.zp_secret_edit)
-                                    .placeholder("zcstream-p2p")
-                                    .width(Some(200.0))
-                                    .on_edit(|s: &mut AppState| &mut s.zp_secret_edit)
-                                    .build(k)
-                                    .key("zp_secret_input"),
+                                row()
+                                    .center_y()
+                                    .gap(8.0)
+                                    .child(text("Secret (S)").font(k.ty.ui).color(k.c.text_base).min_w(96.0))
+                                    .child(
+                                        TextInput::new(&s.zp_secret_edit)
+                                            .placeholder("zcstream-p2p")
+                                            .width(Some(190.0))
+                                            .on_edit(|s: &mut AppState| &mut s.zp_secret_edit)
+                                            .build(k)
+                                            .key("zp_secret_input"),
+                                    ),
                             )
-                            .child(text("IP Pair (opt.)").font(k.ty.ui).color(k.c.text_base).ml(8.0))
                             .child(
-                                TextInput::new(&s.zp_peer_ip_edit)
-                                    .placeholder("Auto (DHT)")
-                                    .width(Some(160.0))
-                                    .on_edit(|s: &mut AppState| &mut s.zp_peer_ip_edit)
-                                    .build(k)
-                                    .key("zp_peer_ip_input"),
+                                row()
+                                    .center_y()
+                                    .gap(8.0)
+                                    .child(text("IP Pair (opt.)").font(k.ty.ui).color(k.c.text_base))
+                                    .child(
+                                        TextInput::new(&s.zp_peer_ip_edit)
+                                            .placeholder("Auto (DHT)")
+                                            .width(Some(150.0))
+                                            .on_edit(|s: &mut AppState| &mut s.zp_peer_ip_edit)
+                                            .build(k)
+                                            .key("zp_peer_ip_input"),
+                                    ),
                             )
-                            .child(text("Port pair").font(k.ty.ui).color(k.c.text_base).ml(4.0))
                             .child(
-                                TextInput::new(&s.zp_peer_port_edit)
-                                    .placeholder("0")
-                                    .width(Some(68.0))
-                                    .on_edit(|s: &mut AppState| &mut s.zp_peer_port_edit)
-                                    .build(k)
-                                    .key("zp_peer_port_input"),
+                                row()
+                                    .center_y()
+                                    .gap(8.0)
+                                    .child(text("Port pair").font(k.ty.ui).color(k.c.text_base))
+                                    .child(
+                                        TextInput::new(&s.zp_peer_port_edit)
+                                            .placeholder("0")
+                                            .width(Some(68.0))
+                                            .on_edit(|s: &mut AppState| &mut s.zp_peer_port_edit)
+                                            .build(k)
+                                            .key("zp_peer_port_input"),
+                                    ),
                             )
-                            .child(text("Local").font(k.ty.ui).color(k.c.text_base).ml(4.0))
                             .child(
-                                TextInput::new(&s.zp_local_port_edit)
-                                    .placeholder("0")
-                                    .width(Some(68.0))
-                                    .on_edit(|s: &mut AppState| &mut s.zp_local_port_edit)
-                                    .build(k)
-                                    .key("zp_local_port_input"),
+                                row()
+                                    .center_y()
+                                    .gap(8.0)
+                                    .child(text("Local").font(k.ty.ui).color(k.c.text_base))
+                                    .child(
+                                        TextInput::new(&s.zp_local_port_edit)
+                                            .placeholder("0")
+                                            .width(Some(68.0))
+                                            .on_edit(|s: &mut AppState| &mut s.zp_local_port_edit)
+                                            .build(k)
+                                            .key("zp_local_port_input"),
+                                    ),
                             ),
                     )
                     .child(
                         row()
                             .w_full()
+                            .flex_wrap()
                             .center_y()
-                            .gap(20.0)
+                            .gap(16.0)
                             .child(
                                 Switch::new(s.zp_sentinel)
                                     .label("Sentinel ICMP (IPv4 Layer-3)")
@@ -367,17 +430,19 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(Divider::horizontal().build(k))
             .child(if s.net_role == NetRole::Sender {
                 col()
+                    .w_full()
                     .gap(8.0)
                     .child(
                         row()
                             .w_full()
+                            .flex_wrap()
                             .center_y()
-                            .gap(6.0)
+                            .gap(8.0)
                             .child(
                                 text("Bande passante")
                                     .font(k.ty.ui)
                                     .color(k.c.text_base)
-                                    .grow(1.0),
+                                    .min_w(108.0),
                             )
                             .child(
                                 Button::new("Auto")
@@ -430,14 +495,19 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                                 .key("net_bitrate_seg"),
                             )
                             .child(
-                                TextInput::new(&s.net_bitrate_edit)
-                                    .placeholder(format!("auto ({net_auto_mbps})"))
-                                    .width(Some(76.0))
-                                    .on_edit(|s: &mut AppState| &mut s.net_bitrate_edit)
-                                    .build(k)
-                                    .key("net_bitrate_input"),
-                            )
-                            .child(text("Mbps").font(k.ty.small).color(k.c.text_muted)),
+                                row()
+                                    .center_y()
+                                    .gap(6.0)
+                                    .child(
+                                        TextInput::new(&s.net_bitrate_edit)
+                                            .placeholder(format!("auto ({net_auto_mbps})"))
+                                            .width(Some(76.0))
+                                            .on_edit(|s: &mut AppState| &mut s.net_bitrate_edit)
+                                            .build(k)
+                                            .key("net_bitrate_input"),
+                                    )
+                                    .child(text("Mbps").font(k.ty.small).color(k.c.text_muted)),
+                            ),
                     )
                     .child(net_hz_row)
                     .child(if net_fps_under_bw {
@@ -447,6 +517,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         ))
                         .font(k.ty.small)
                         .color(k.c.text_accent)
+                        .wrap()
                     } else {
                         rune::el().size(0.0, 0.0)
                     })
@@ -473,24 +544,28 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         text("Transport UDP POSIX actif (Winsock RIO spécifique Windows).")
                             .font(k.ty.small)
                             .color(k.c.text_muted)
+                            .wrap()
                     })
             } else {
                 col()
+                    .w_full()
                     .gap(8.0)
                     .child(net_hz_row)
                     .child(
                         text(if cfg!(target_os = "windows") {
                             "Le récepteur ouvre une fenêtre FLIP_DISCARD temps réel dès réception des frames."
                         } else {
-                            "Le récepteur décode en temps réel les frames reçues en boucle fermée bit-exacte."
+                            "Le récepteur ouvre une fenêtre X11 temps réel dès réception (ou décode en headless si DISPLAY est absent)."
                         })
                             .font(k.ty.small)
-                            .color(k.c.text_muted),
+                            .color(k.c.text_muted)
+                            .wrap(),
                     )
             })
             .child(
                 row()
                     .w_full()
+                    .flex_wrap()
                     .center_y()
                     .gap(12.0)
                     .pt(6.0)
@@ -584,15 +659,22 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     } else {
                         rune::el().size(0.0, 0.0)
                     })
-                    .child(if !net_codec_supported {
-                        text("NVENC (H.264) requiert Windows x64 — sélectionnez Zcvid ou Pyrowave.")
-                            .font(k.ty.ui)
-                            .color(k.c.text_accent)
-                    } else {
-                        text(s.net_stats.status_msg.clone())
-                            .font(k.ty.ui)
-                            .color(k.c.text_muted)
-                    }),
+                    .child(
+                        col()
+                            .min_w(0.0)
+                            .shrink()
+                            .child(if !net_codec_supported {
+                                text("Ce codec requiert Windows x64 GPU — sélectionnez Zcvid Portable sur cette plateforme.")
+                                    .font(k.ty.ui)
+                                    .color(k.c.text_accent)
+                                    .wrap()
+                            } else {
+                                text(s.net_stats.status_msg.clone())
+                                    .font(k.ty.ui)
+                                    .color(k.c.text_muted)
+                                    .wrap()
+                            }),
+                    ),
             ),
     );
 
@@ -603,6 +685,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         None,
         row()
             .w_full()
+            .flex_wrap()
             .gap(12.0)
             .child(kpi_box(
                 k,
@@ -664,12 +747,13 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             }),
     );
 
-    let mut log_col = col().w_full().gap(2.0);
+    let mut log_col = col().w_full().min_w(0.0).gap(2.0);
     if s.net_logs.is_empty() {
         log_col = log_col.child(
             text(format!("Les logs de {} s'afficheront ici.", bin_name("zcrudp_stream")))
                 .font(k.ty.mono)
-                .color(k.c.text_muted),
+                .color(k.c.text_muted)
+                .wrap_anywhere(),
         );
     } else {
         for (i, line) in s.net_logs.iter().enumerate() {
@@ -677,7 +761,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 text(line.clone())
                     .key(format!("nlog_{i}"))
                     .font(k.ty.mono)
-                    .color(k.c.text_base),
+                    .color(k.c.text_base)
+                    .wrap_anywhere(),
             );
         }
     }
@@ -685,6 +770,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
     col()
         .key("network_view")
         .w_full()
+        .min_w(0.0)
         .gap(16.0)
         .child(config_panel)
         .child(telemetry)
@@ -694,8 +780,10 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             "Console zcrudp_stream",
             None,
             col()
-                .h(160.0)
+                .min_h(140.0)
+                .max_h(260.0)
                 .w_full()
+                .min_w(0.0)
                 .padding(10.0)
                 .radius(k.radius.md)
                 .fill(k.c.bg_base)

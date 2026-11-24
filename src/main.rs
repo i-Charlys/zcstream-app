@@ -54,6 +54,7 @@ fn main() {
     rune::run(AppSpec::<AppState> {
         setup: Some(setup),
         poll: Some(poll),
+        min_size: Some((360.0, 420.0)),
         scenes: &[("receiver", |s| s.net_role = crate::state::NetRole::Receiver)],
         ..AppSpec::new("zcstream — Streaming Vidéo RUDP", (1200.0, 820.0), AppState::default, view)
     });
@@ -118,11 +119,44 @@ mod tests {
         // Platform agnosticism checks (OS/arch detection + universal Zcvid defaults)
         assert!(!crate::state::host_platform_badge().is_empty());
         assert!(crate::state::StreamCodec::Zcvid.is_supported_on_platform());
-        assert!(crate::state::StreamCodec::Pyrowave.is_supported_on_platform());
+        assert_eq!(
+            crate::state::StreamCodec::Pyrowave.is_supported_on_platform(),
+            crate::state::host_supports_pyrowave()
+        );
         assert_eq!(
             crate::state::bin_name("zcrudp_stream"),
             format!("zcrudp_stream{}", std::env::consts::EXE_SUFFIX)
         );
+    }
+
+    #[test]
+    fn responsive_view_renders_across_unorthodox_viewports() {
+        let env = Env { system_dark: true, scale: 1.0 };
+        let viewports = [
+            (420.0, 900.0),   // vertical phone / narrow portrait pane
+            (640.0, 480.0),   // small 4:3 window
+            (1800.0, 380.0),  // ultra-short ultra-wide ribbon
+            (3440.0, 1440.0), // 21:9 ultrawide monitor
+            (1200.0, 820.0),  // standard desktop
+        ];
+        for (w, h) in viewports {
+            let mut rt_direct = Runtime::new(AppState::default(), view, (w, h), env);
+            rt_direct.frame(0.0);
+            assert!(rt_direct.find("header").is_some());
+            assert!(rt_direct.find("net_cfg_panel").is_some());
+            assert!(rt_direct.find("net_telemetry").is_some());
+            assert!(rt_direct.find("net_logs_panel").is_some());
+
+            let zp_rx = AppState {
+                net_role: crate::state::NetRole::Receiver,
+                net_connect_mode: crate::state::NetConnectMode::ZpSync,
+                ..AppState::default()
+            };
+            let mut rt_zp = Runtime::new(zp_rx, view, (w, h), env);
+            rt_zp.frame(0.0);
+            assert!(rt_zp.find("btn_zp_probe").is_some());
+            assert!(rt_zp.find("btn_net_start").is_some());
+        }
     }
 
     #[test]

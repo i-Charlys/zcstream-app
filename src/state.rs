@@ -201,6 +201,10 @@ pub fn host_supports_nvenc() -> bool {
     cfg!(all(target_os = "windows", target_arch = "x86_64"))
 }
 
+pub fn host_supports_pyrowave() -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+}
+
 pub fn host_supports_rio() -> bool {
     cfg!(target_os = "windows")
 }
@@ -250,7 +254,8 @@ impl StreamCodec {
     pub fn is_supported_on_platform(self) -> bool {
         match self {
             StreamCodec::Nvenc => host_supports_nvenc(),
-            StreamCodec::Pyrowave | StreamCodec::Zcvid => true,
+            StreamCodec::Pyrowave => host_supports_pyrowave(),
+            StreamCodec::Zcvid => true,
         }
     }
 }
