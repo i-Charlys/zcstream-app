@@ -7,7 +7,9 @@ use rune_kit::{
     Spinner, Switch, TextInput,
 };
 
-use crate::net_udp::{ZpSyncLaunchOpts, probe_zpsync_network, start_network_session};
+use crate::net_udp::{
+    PeriphLaunchOpts, ZpSyncLaunchOpts, probe_devices, probe_zpsync_network, start_network_session,
+};
 use crate::state::{
     AppState, NetConnectMode, NetRole, RESOLUTIONS, StreamCodec, bin_name, host_platform_badge,
     host_supports_rio,
@@ -631,6 +633,40 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                             } else {
                                 s.effective_net_bitrate_mbps()
                             };
+                            let display_idx = s
+                                .devices
+                                .displays
+                                .get(s.net_display_idx)
+                                .and_then(|d| d.id.parse::<u32>().ok())
+                                .unwrap_or(s.net_display_idx as u32);
+                            let audio_out = if s.net_audio_out_idx == 0 {
+                                "default".to_owned()
+                            } else {
+                                s.devices
+                                    .audio_outs
+                                    .get(s.net_audio_out_idx - 1)
+                                    .map(|d| d.id.clone())
+                                    .unwrap_or_else(|| "default".to_owned())
+                            };
+                            let audio_in = if s.net_audio_in_idx == 0 {
+                                "default".to_owned()
+                            } else {
+                                s.devices
+                                    .audio_ins
+                                    .get(s.net_audio_in_idx - 1)
+                                    .map(|d| d.id.clone())
+                                    .unwrap_or_else(|| "default".to_owned())
+                            };
+                            let periph = PeriphLaunchOpts {
+                                display_idx,
+                                input: s.net_input_enabled,
+                                mouse_relative: s.net_mouse_relative,
+                                gamepad: s.net_gamepad_enabled,
+                                audio: s.net_audio_enabled,
+                                mic: s.net_mic_enabled,
+                                audio_out,
+                                audio_in,
+                            };
                             s.net_fps = fps;
                             s.net_bitrate_mbps = bitrate_mbps;
                             start_network_session(
@@ -646,6 +682,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                                 bitrate_mbps,
                                 s.net_fec_shards,
                                 s.net_use_rio,
+                                periph,
                                 s.tx.clone(),
                                 s.waker.clone(),
                                 stop,
@@ -676,6 +713,287 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                             }),
                     ),
             ),
+    );
+
+    let display_label = if s.devices.displays.is_empty() {
+        format!("Écran #{} (principal)", s.net_display_idx)
+    } else {
+        s.devices
+            .displays
+            .get(s.net_display_idx)
+            .map(|d| d.label.clone())
+            .unwrap_or_else(|| format!("Écran #{}", s.net_display_idx))
+    };
+    let audio_out_label = if s.net_audio_out_idx == 0 {
+        "Par défaut (système)".to_owned()
+    } else {
+        s.devices
+            .audio_outs
+            .get(s.net_audio_out_idx - 1)
+            .map(|d| d.label.clone())
+            .unwrap_or_else(|| "Par défaut".to_owned())
+    };
+    let audio_in_label = if s.net_audio_in_idx == 0 {
+        "Par défaut (micro)".to_owned()
+    } else {
+        s.devices
+            .audio_ins
+            .get(s.net_audio_in_idx - 1)
+            .map(|d| d.label.clone())
+            .unwrap_or_else(|| "Par défaut".to_owned())
+    };
+    let disp_count = s.devices.displays.len();
+    let audio_out_count = s.devices.audio_outs.len();
+    let audio_in_count = s.devices.audio_ins.len();
+
+    let periph_panel = panel(
+        k,
+        "net_periph_panel",
+        "Périphériques (Entrées & Sorties)",
+        Some("Capture/injection clavier, souris, manettes (ViGEm/uinput) et audio bidirectionnel 48 kHz"),
+        col()
+            .w_full()
+            .min_w(0.0)
+            .gap(12.0)
+            .child(
+                row()
+                    .w_full()
+                    .flex_wrap()
+                    .justify_between()
+                    .center_y()
+                    .gap(8.0)
+                    .child(
+                        row()
+                            .flex_wrap()
+                            .center_y()
+                            .gap(6.0)
+                            .child(
+                                Badge::new(format!("{} écran(s)", disp_count.max(1)))
+                                    .variant(BadgeVariant::Neutral)
+                                    .build(k),
+                            )
+                            .child(
+                                Badge::new(format!(
+                                    "{} sortie(s) / {} micro(s)",
+                                    audio_out_count, audio_in_count
+                                ))
+                                .variant(BadgeVariant::Neutral)
+                                .build(k),
+                            )
+                            .child(
+                                Badge::new(if s.devices.gamepads.is_empty() {
+                                    "0 manette détectée".to_owned()
+                                } else {
+                                    format!("{} manette(s)", s.devices.gamepads.len())
+                                })
+                                .variant(if s.devices.gamepads.is_empty() {
+                                    BadgeVariant::Neutral
+                                } else {
+                                    BadgeVariant::Accent
+                                })
+                                .build(k),
+                            ),
+                    )
+                    .child(
+                        Button::new(if s.devices_probing {
+                            "Détection..."
+                        } else {
+                            "Rafraîchir périphériques"
+                        })
+                        .variant(ButtonVariant::Outline)
+                        .control_size(ControlSize::Small)
+                        .disabled(s.devices_probing || s.net_stats.running)
+                        .on_press(|s: &mut AppState| {
+                            s.devices_probing = true;
+                            probe_devices(true, s.tx.clone(), s.waker.clone());
+                        })
+                        .build(k)
+                        .key("btn_periph_refresh"),
+                    ),
+            )
+            .child(
+                row()
+                    .w_full()
+                    .flex_wrap()
+                    .gap(16.0)
+                    .child(
+                        Switch::new(s.net_input_enabled)
+                            .label("Clavier & Souris")
+                            .description(if s.net_role == NetRole::Sender {
+                                "Injecte clavier/souris reçus sur cet hôte"
+                            } else {
+                                "Envoie clavier & souris depuis la fenêtre vidéo"
+                            })
+                            .on_toggle(|s: &mut AppState| {
+                                if !s.net_stats.running {
+                                    s.net_input_enabled = !s.net_input_enabled;
+                                }
+                            })
+                            .build(k)
+                            .key("net_sw_input"),
+                    )
+                    .child(
+                        Switch::new(s.net_gamepad_enabled)
+                            .label("Manettes / Gamepad")
+                            .description(if s.net_role == NetRole::Sender {
+                                "Émule Xbox 360 virtuelle (ViGEmBus / uinput)"
+                            } else {
+                                "Lit XInput / /dev/input/js* vers l'hôte"
+                            })
+                            .on_toggle(|s: &mut AppState| {
+                                if !s.net_stats.running {
+                                    s.net_gamepad_enabled = !s.net_gamepad_enabled;
+                                }
+                            })
+                            .build(k)
+                            .key("net_sw_gamepad"),
+                    )
+                    .child(
+                        Switch::new(s.net_audio_enabled)
+                            .label("Audio système (Hôte → Client)")
+                            .description("Son bureau 48 kHz IMA-ADPCM faible latence")
+                            .on_toggle(|s: &mut AppState| {
+                                if !s.net_stats.running {
+                                    s.net_audio_enabled = !s.net_audio_enabled;
+                                }
+                            })
+                            .build(k)
+                            .key("net_sw_audio"),
+                    )
+                    .child(
+                        Switch::new(s.net_mic_enabled)
+                            .label("Microphone (Client → Hôte)")
+                            .description("Envoie la voix du client vers la sortie hôte")
+                            .on_toggle(|s: &mut AppState| {
+                                if !s.net_stats.running {
+                                    s.net_mic_enabled = !s.net_mic_enabled;
+                                }
+                            })
+                            .build(k)
+                            .key("net_sw_mic"),
+                    ),
+            )
+            .child(if s.net_role == NetRole::Receiver && s.net_input_enabled {
+                col()
+                    .w_full()
+                    .min_w(0.0)
+                    .gap(6.0)
+                    .child(
+                        row()
+                            .w_full()
+                            .flex_wrap()
+                            .center_y()
+                            .gap(10.0)
+                            .child(
+                                text("Mode Souris")
+                                    .font(k.ty.ui)
+                                    .color(k.c.text_base)
+                                    .min_w(96.0),
+                            )
+                            .child(
+                                SegmentedControl::new(
+                                    &["Absolu (Bureau)", "Relatif (FPS)"],
+                                    Some(if s.net_mouse_relative { 1 } else { 0 }),
+                                )
+                                .fit()
+                                .on_pick(|s: &mut AppState, idx, _| {
+                                    if !s.net_stats.running {
+                                        s.net_mouse_relative = idx == 1;
+                                    }
+                                })
+                                .build(k)
+                                .key("net_mouse_mode_seg"),
+                            ),
+                    )
+                    .child(
+                        text("Raccourcis fenêtre : Ctrl+Alt+Shift+M (verrou FPS), Ctrl+Alt+Shift+Q (fermer).")
+                            .font(k.ty.small)
+                            .color(k.c.text_muted)
+                            .wrap(),
+                    )
+            } else {
+                rune::el().size(0.0, 0.0)
+            })
+            .child(if s.net_role == NetRole::Sender {
+                stepper(
+                    k,
+                    "periph_display",
+                    "Écran capturé",
+                    display_label,
+                    move |s| {
+                        if !s.net_stats.running && disp_count > 1 {
+                            s.net_display_idx = if s.net_display_idx == 0 {
+                                disp_count - 1
+                            } else {
+                                s.net_display_idx - 1
+                            };
+                        }
+                    },
+                    move |s| {
+                        if !s.net_stats.running && disp_count > 1 {
+                            s.net_display_idx = (s.net_display_idx + 1) % disp_count;
+                        }
+                    },
+                )
+            } else {
+                rune::el().size(0.0, 0.0)
+            })
+            .child(if s.net_audio_enabled || (s.net_role == NetRole::Sender && s.net_mic_enabled) {
+                stepper(
+                    k,
+                    "periph_audio_out",
+                    if s.net_role == NetRole::Sender {
+                        "Audio hôte (loopback / sortie)"
+                    } else {
+                        "Sortie audio locale"
+                    },
+                    audio_out_label,
+                    move |s| {
+                        if !s.net_stats.running {
+                            let max_n = audio_out_count + 1;
+                            s.net_audio_out_idx = if s.net_audio_out_idx == 0 {
+                                max_n - 1
+                            } else {
+                                s.net_audio_out_idx - 1
+                            };
+                        }
+                    },
+                    move |s| {
+                        if !s.net_stats.running {
+                            let max_n = audio_out_count + 1;
+                            s.net_audio_out_idx = (s.net_audio_out_idx + 1) % max_n;
+                        }
+                    },
+                )
+            } else {
+                rune::el().size(0.0, 0.0)
+            })
+            .child(if s.net_role == NetRole::Receiver && s.net_mic_enabled {
+                stepper(
+                    k,
+                    "periph_audio_in",
+                    "Microphone local",
+                    audio_in_label,
+                    move |s| {
+                        if !s.net_stats.running {
+                            let max_n = audio_in_count + 1;
+                            s.net_audio_in_idx = if s.net_audio_in_idx == 0 {
+                                max_n - 1
+                            } else {
+                                s.net_audio_in_idx - 1
+                            };
+                        }
+                    },
+                    move |s| {
+                        if !s.net_stats.running {
+                            let max_n = audio_in_count + 1;
+                            s.net_audio_in_idx = (s.net_audio_in_idx + 1) % max_n;
+                        }
+                    },
+                )
+            } else {
+                rune::el().size(0.0, 0.0)
+            }),
     );
 
     let telemetry = panel(
@@ -731,6 +1049,17 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 },
                 None,
             ))
+            .child(kpi_box(
+                k,
+                "net_kpi_periph",
+                "HID / Audio",
+                format!(
+                    "{} HID · {} audio",
+                    s.net_stats.input_events + s.net_stats.gamepad_pkts,
+                    s.net_stats.audio_pkts
+                ),
+                None,
+            ))
             .child(if !s.net_stats.zp_path.is_empty() {
                 kpi_box(
                     k,
@@ -773,6 +1102,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .min_w(0.0)
         .gap(16.0)
         .child(config_panel)
+        .child(periph_panel)
         .child(telemetry)
         .child(panel(
             k,

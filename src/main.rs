@@ -8,7 +8,9 @@ use rune::{AppSpec, Cx, El, Tx, Waker};
 use crate::state::{AppEvent, AppState};
 
 fn setup(s: &mut AppState, waker: Waker) {
-    s.waker = Some(waker);
+    s.waker = Some(waker.clone());
+    s.devices_probing = true;
+    net_udp::probe_devices(false, s.tx.clone(), Some(waker));
 }
 
 fn poll(s: &mut AppState, _t: f64, _tx: &mut Tx) -> bool {
@@ -33,6 +35,27 @@ fn poll(s: &mut AppState, _t: f64, _tx: &mut Tx) -> bool {
             AppEvent::ZpProbeDone { summary, logs } => {
                 s.zp_probing = false;
                 s.zp_probe_info = Some(summary);
+                for line in logs {
+                    if s.net_logs.len() >= 300 {
+                        s.net_logs.remove(0);
+                    }
+                    s.net_logs.push(line);
+                }
+            }
+            AppEvent::DevicesListed { catalog, logs } => {
+                s.devices_probing = false;
+                if catalog.loaded {
+                    s.devices = catalog;
+                    if !s.devices.displays.is_empty() && s.net_display_idx >= s.devices.displays.len() {
+                        s.net_display_idx = 0;
+                    }
+                    if s.net_audio_out_idx > s.devices.audio_outs.len() {
+                        s.net_audio_out_idx = 0;
+                    }
+                    if s.net_audio_in_idx > s.devices.audio_ins.len() {
+                        s.net_audio_in_idx = 0;
+                    }
+                }
                 for line in logs {
                     if s.net_logs.len() >= 300 {
                         s.net_logs.remove(0);
@@ -144,7 +167,9 @@ mod tests {
             rt_direct.frame(0.0);
             assert!(rt_direct.find("header").is_some());
             assert!(rt_direct.find("net_cfg_panel").is_some());
+            assert!(rt_direct.find("net_periph_panel").is_some());
             assert!(rt_direct.find("net_telemetry").is_some());
+            assert!(rt_direct.find("net_kpi_periph").is_some());
             assert!(rt_direct.find("net_logs_panel").is_some());
 
             let zp_rx = AppState {
@@ -156,7 +181,80 @@ mod tests {
             rt_zp.frame(0.0);
             assert!(rt_zp.find("btn_zp_probe").is_some());
             assert!(rt_zp.find("btn_net_start").is_some());
+            assert!(rt_zp.find("net_mouse_mode_seg").is_some());
         }
+    }
+
+    #[test]
+    fn parse_device_list_parses_all_device_types() {
+        let sample = "\
+DISPLAY|0|\\\\.\\DISPLAY1 (Principal)|1920x1080|0,0\n\
+DISPLAY|1|\\\\.\\DISPLAY2|1440x2560|-1440,0\n\
+AUDIO_OUT|0|Speakers (Minifuse 1)\n\
+AUDIO_IN|0|Input 1 (Minifuse 1)\n\
+GAMEPAD|0|XInput Controller #1\n";
+        let cat = net_udp::parse_device_list(sample);
+        assert!(cat.loaded);
+        assert_eq!(cat.displays.len(), 2);
+        assert_eq!(cat.displays[0].id, "0");
+        assert!(cat.displays[1].label.contains("1440x2560"));
+        assert_eq!(cat.audio_outs.len(), 1);
+        assert_eq!(cat.audio_ins.len(), 1);
+        assert_eq!(cat.gamepads.len(), 1);
+        assert_eq!(cat.gamepads[0].label, "XInput Controller #1");
+    }
+
+    #[test]
+    fn stream_args_include_peripheral_flags() {
+        let periph = net_udp::PeriphLaunchOpts {
+            display_idx: 1,
+            input: true,
+            mouse_relative: true,
+            gamepad: true,
+            audio: true,
+            mic: true,
+            audio_out: "2".to_owned(),
+            audio_in: "1".to_owned(),
+        };
+        let tx_args = net_udp::build_stream_args(
+            crate::state::NetRole::Sender,
+            crate::state::NetConnectMode::DirectUdp,
+            crate::state::StreamCodec::Zcvid,
+            1920,
+            1080,
+            "192.168.1.50",
+            9900,
+            None,
+            120,
+            0,
+            1,
+            false,
+            &periph,
+        );
+        assert!(tx_args.windows(2).any(|w| w == ["--display", "1"]));
+        assert!(tx_args.contains(&"--input".to_owned()));
+        assert!(tx_args.contains(&"--gamepad".to_owned()));
+        assert!(tx_args.contains(&"--audio".to_owned()));
+        assert!(tx_args.contains(&"--mic".to_owned()));
+        assert!(tx_args.windows(2).any(|w| w == ["--audio-out", "2"]));
+
+        let rx_args = net_udp::build_stream_args(
+            crate::state::NetRole::Receiver,
+            crate::state::NetConnectMode::DirectUdp,
+            crate::state::StreamCodec::Zcvid,
+            1920,
+            1080,
+            "127.0.0.1",
+            9900,
+            None,
+            120,
+            0,
+            1,
+            false,
+            &periph,
+        );
+        assert!(rx_args.windows(2).any(|w| w == ["--mouse-mode", "rel"]));
+        assert!(rx_args.windows(2).any(|w| w == ["--audio-in", "1"]));
     }
 
     #[test]

@@ -11,7 +11,8 @@ use rune::Waker;
 
 use crate::runner::ensure_binary_available;
 use crate::state::{
-    AppEvent, NetConnectMode, NetRole, NetSessionStats, StreamCodec, bin_name,
+    AppEvent, DeviceCatalog, DeviceEntry, NetConnectMode, NetRole, NetSessionStats, StreamCodec,
+    bin_name, find_binary,
 };
 
 #[derive(Clone, Debug)]
@@ -22,6 +23,199 @@ pub struct ZpSyncLaunchOpts {
     pub local_port: u16,
     pub birthday: bool,
     pub sentinel: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PeriphLaunchOpts {
+    pub display_idx: u32,
+    pub input: bool,
+    pub mouse_relative: bool,
+    pub gamepad: bool,
+    pub audio: bool,
+    pub mic: bool,
+    pub audio_out: String,
+    pub audio_in: String,
+}
+
+pub fn parse_device_list(raw: &str) -> DeviceCatalog {
+    let mut cat = DeviceCatalog {
+        loaded: true,
+        ..Default::default()
+    };
+    for line in raw.lines() {
+        let parts: Vec<&str> = line.trim().split('|').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let id = parts[1].trim().to_owned();
+        let name = parts[2].trim();
+        match parts[0] {
+            "DISPLAY" => {
+                let label = if parts.len() >= 4 && !parts[3].trim().is_empty() {
+                    format!("{name} ({})", parts[3].trim())
+                } else {
+                    name.to_owned()
+                };
+                cat.displays.push(DeviceEntry { id, label });
+            }
+            "AUDIO_OUT" => {
+                cat.audio_outs.push(DeviceEntry {
+                    id,
+                    label: name.to_owned(),
+                });
+            }
+            "AUDIO_IN" => {
+                cat.audio_ins.push(DeviceEntry {
+                    id,
+                    label: name.to_owned(),
+                });
+            }
+            "GAMEPAD" => {
+                cat.gamepads.push(DeviceEntry {
+                    id,
+                    label: name.to_owned(),
+                });
+            }
+            _ => {}
+        }
+    }
+    cat
+}
+
+pub fn probe_devices(auto_build: bool, tx: Sender<AppEvent>, waker: Option<Waker>) {
+    thread::spawn(move || {
+        let mut logs = Vec::new();
+        let exe_opt = if auto_build {
+            ensure_binary_available("zcrudp_stream", |line| logs.push(line))
+        } else {
+            find_binary("zcrudp_stream")
+        };
+        let Some(exe_path) = exe_opt else {
+            let _ = tx.send(AppEvent::DevicesListed {
+                catalog: DeviceCatalog::default(),
+                logs,
+            });
+            wake(&waker);
+            return;
+        };
+        let work_dir = exe_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut catalog = DeviceCatalog::default();
+        match Command::new(&exe_path)
+            .arg("--list-devices")
+            .current_dir(&work_dir)
+            .output()
+        {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if out.status.success() {
+                    catalog = parse_device_list(&stdout);
+                } else {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if !stderr.trim().is_empty() {
+                        logs.push(format!("[stderr] {}", stderr.trim()));
+                    }
+                }
+            }
+            Err(e) => logs.push(format!("Erreur --list-devices: {e}")),
+        }
+        let _ = tx.send(AppEvent::DevicesListed { catalog, logs });
+        wake(&waker);
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_stream_args(
+    role: NetRole,
+    connect_mode: NetConnectMode,
+    codec: StreamCodec,
+    width: u32,
+    height: u32,
+    host: &str,
+    port: u16,
+    zp_opts: Option<&ZpSyncLaunchOpts>,
+    fps: u32,
+    bitrate_mbps: u32,
+    fec_shards: u8,
+    use_rio: bool,
+    periph: &PeriphLaunchOpts,
+) -> Vec<String> {
+    let mut args = vec![
+        "--role".to_owned(),
+        match role {
+            NetRole::Sender => "sender".to_owned(),
+            NetRole::Receiver => "receiver".to_owned(),
+        },
+        "--codec".to_owned(),
+        codec.as_arg().to_owned(),
+        "--width".to_owned(),
+        width.to_string(),
+        "--height".to_owned(),
+        height.to_string(),
+    ];
+
+    match connect_mode {
+        NetConnectMode::DirectUdp => {
+            args.extend(["--port".to_owned(), port.to_string()]);
+            if role == NetRole::Sender {
+                args.extend(["--host".to_owned(), host.to_owned()]);
+            }
+        }
+        NetConnectMode::ZpSync => {
+            if let Some(zp) = zp_opts {
+                args.extend(["--zpsync".to_owned(), zp.secret.clone()]);
+                if !zp.peer_ip.is_empty() {
+                    args.extend(["--zp-peer".to_owned(), zp.peer_ip.clone()]);
+                }
+                if zp.peer_port > 0 {
+                    args.extend(["--zp-port".to_owned(), zp.peer_port.to_string()]);
+                }
+                if zp.local_port > 0 {
+                    args.extend(["--zp-local-port".to_owned(), zp.local_port.to_string()]);
+                }
+                if zp.birthday {
+                    args.push("--zp-birthday".to_owned());
+                }
+                if !zp.sentinel {
+                    args.push("--zp-no-sentinel".to_owned());
+                }
+            }
+        }
+    }
+
+    args.extend(["--fps".to_owned(), fps.to_string()]);
+    if role == NetRole::Sender {
+        args.extend([
+            "--bitrate".to_owned(),
+            bitrate_mbps.to_string(),
+            "--fec".to_owned(),
+            fec_shards.to_string(),
+            "--display".to_owned(),
+            periph.display_idx.to_string(),
+        ]);
+        if !use_rio {
+            args.push("--no-rio".to_owned());
+        }
+    } else if periph.input {
+        args.extend([
+            "--mouse-mode".to_owned(),
+            if periph.mouse_relative { "rel" } else { "abs" }.to_owned(),
+        ]);
+    }
+
+    args.push(if periph.input { "--input" } else { "--no-input" }.to_owned());
+    args.push(if periph.gamepad { "--gamepad" } else { "--no-gamepad" }.to_owned());
+    args.push(if periph.audio { "--audio" } else { "--no-audio" }.to_owned());
+    args.push(if periph.mic { "--mic" } else { "--no-mic" }.to_owned());
+    if !periph.audio_out.is_empty() && periph.audio_out != "default" {
+        args.extend(["--audio-out".to_owned(), periph.audio_out.clone()]);
+    }
+    if role == NetRole::Receiver && periph.mic && !periph.audio_in.is_empty() && periph.audio_in != "default" {
+        args.extend(["--audio-in".to_owned(), periph.audio_in.clone()]);
+    }
+    args
 }
 
 fn wake(waker: &Option<Waker>) {
@@ -124,6 +318,7 @@ pub fn start_network_session(
     bitrate_mbps: u32,
     fec_shards: u8,
     use_rio: bool,
+    periph: PeriphLaunchOpts,
     tx: Sender<AppEvent>,
     waker: Option<Waker>,
     stop: Arc<AtomicBool>,
@@ -147,61 +342,21 @@ pub fn start_network_session(
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let mut args = vec![
-            "--role".to_owned(),
-            match role {
-                NetRole::Sender => "sender".to_owned(),
-                NetRole::Receiver => "receiver".to_owned(),
-            },
-            "--codec".to_owned(),
-            codec.as_arg().to_owned(),
-            "--width".to_owned(),
-            width.to_string(),
-            "--height".to_owned(),
-            height.to_string(),
-        ];
-
-        match connect_mode {
-            NetConnectMode::DirectUdp => {
-                args.extend(["--port".to_owned(), port.to_string()]);
-                if role == NetRole::Sender {
-                    args.extend(["--host".to_owned(), host.clone()]);
-                }
-            }
-            NetConnectMode::ZpSync => {
-                if let Some(ref zp) = zp_opts {
-                    args.extend(["--zpsync".to_owned(), zp.secret.clone()]);
-                    if !zp.peer_ip.is_empty() {
-                        args.extend(["--zp-peer".to_owned(), zp.peer_ip.clone()]);
-                    }
-                    if zp.peer_port > 0 {
-                        args.extend(["--zp-port".to_owned(), zp.peer_port.to_string()]);
-                    }
-                    if zp.local_port > 0 {
-                        args.extend(["--zp-local-port".to_owned(), zp.local_port.to_string()]);
-                    }
-                    if zp.birthday {
-                        args.push("--zp-birthday".to_owned());
-                    }
-                    if !zp.sentinel {
-                        args.push("--zp-no-sentinel".to_owned());
-                    }
-                }
-            }
-        }
-
-        args.extend(["--fps".to_owned(), fps.to_string()]);
-        if role == NetRole::Sender {
-            args.extend([
-                "--bitrate".to_owned(),
-                bitrate_mbps.to_string(),
-                "--fec".to_owned(),
-                fec_shards.to_string(),
-            ]);
-            if !use_rio {
-                args.push("--no-rio".to_owned());
-            }
-        }
+        let args = build_stream_args(
+            role,
+            connect_mode,
+            codec,
+            width,
+            height,
+            &host,
+            port,
+            zp_opts.as_ref(),
+            fps,
+            bitrate_mbps,
+            fec_shards,
+            use_rio,
+            &periph,
+        );
 
         let _ = tx.send(AppEvent::NetLog(format!(
             "$ {} {}",
@@ -374,6 +529,25 @@ fn parse_stream_line(stats: &mut NetSessionStats, line: &str) -> bool {
                 && let Ok(v) = val.trim().parse::<u64>()
             {
                 stats.frames_dropped = v;
+            }
+        }
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("[PERIPH]") {
+        // e.g. "hid=12 gp=3 audio=100 mic=0"
+        for tok in rest.split_whitespace() {
+            if let Some(val) = tok.strip_prefix("hid=")
+                && let Ok(v) = val.parse::<u64>()
+            {
+                stats.input_events = v;
+            } else if let Some(val) = tok.strip_prefix("gp=")
+                && let Ok(v) = val.parse::<u64>()
+            {
+                stats.gamepad_pkts = v;
+            } else if let Some(val) = tok.strip_prefix("audio=")
+                && let Ok(v) = val.parse::<u64>()
+            {
+                stats.audio_pkts = v;
             }
         }
         return true;

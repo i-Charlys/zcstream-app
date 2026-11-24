@@ -260,6 +260,21 @@ impl StreamCodec {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceEntry {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceCatalog {
+    pub displays: Vec<DeviceEntry>,
+    pub audio_outs: Vec<DeviceEntry>,
+    pub audio_ins: Vec<DeviceEntry>,
+    pub gamepads: Vec<DeviceEntry>,
+    pub loaded: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct NetSessionStats {
     pub running: bool,
@@ -270,6 +285,9 @@ pub struct NetSessionStats {
     pub fec_recovered: u64,
     pub frames_dropped: u64,
     pub packets_total: u64,
+    pub input_events: u64,
+    pub gamepad_pkts: u64,
+    pub audio_pkts: u64,
     pub status_msg: String,
     pub zp_path: String,
     pub zp_session: String,
@@ -281,6 +299,7 @@ pub enum AppEvent {
     NetLog(String),
     NetStopped(String),
     ZpProbeDone { summary: String, logs: Vec<String> },
+    DevicesListed { catalog: DeviceCatalog, logs: Vec<String> },
 }
 
 pub struct AppState {
@@ -312,6 +331,17 @@ pub struct AppState {
     pub net_bitrate_edit: TextEdit,
     pub net_fec_shards: u8,
     pub net_use_rio: bool,
+    // Peripheral I/O state (Parsec / Moonlight parity)
+    pub net_input_enabled: bool,
+    pub net_mouse_relative: bool,
+    pub net_gamepad_enabled: bool,
+    pub net_audio_enabled: bool,
+    pub net_mic_enabled: bool,
+    pub net_display_idx: usize,
+    pub net_audio_out_idx: usize,
+    pub net_audio_in_idx: usize,
+    pub devices: DeviceCatalog,
+    pub devices_probing: bool,
     pub net_stop: Option<Arc<AtomicBool>>,
     pub net_stats: NetSessionStats,
     pub net_logs: Vec<String>,
@@ -358,6 +388,16 @@ impl Default for AppState {
             net_bitrate_edit,
             net_fec_shards: 1,
             net_use_rio: host_supports_rio(),
+            net_input_enabled: true,
+            net_mouse_relative: false,
+            net_gamepad_enabled: true,
+            net_audio_enabled: true,
+            net_mic_enabled: false,
+            net_display_idx: 0,
+            net_audio_out_idx: 0,
+            net_audio_in_idx: 0,
+            devices: DeviceCatalog::default(),
+            devices_probing: false,
             net_stop: None,
             net_stats: NetSessionStats {
                 status_msg: format!(
